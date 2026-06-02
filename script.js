@@ -99,12 +99,29 @@ const OPENING = new Date("2026-06-11T21:00:00");
 const FINAL = new Date("2026-07-19T21:00:00");
 const FAV_KEY = "cdm_favorites";
 const THEME_KEY = "cdm_theme";
+const BRACKET_KEY = "cdm_bracket_predictions";
+const WELCOME_KEY = "cdm_welcome_seen";
 const MATCH_MS = 105 * 60 * 1000;
+const BRACKET_ROUNDS = [
+  { key: "r32", label: "16es de finale", short: "16e", matchCount: 16 },
+  { key: "r16", label: "8es de finale", short: "8e", matchCount: 8 },
+  { key: "qf", label: "Quarts", short: "QF", matchCount: 4 },
+  { key: "sf", label: "Demi-finales", short: "DF", matchCount: 2 },
+  { key: "final", label: "Finale", short: "Finale", matchCount: 1 }
+];
+
+const BRACKET_PAIRS = {
+  r16: [[1, 4], [0, 2], [3, 5], [6, 7], [10, 11], [8, 9], [13, 15], [12, 14]],
+  qf: [[0, 1], [4, 5], [2, 3], [6, 7]],
+  sf: [[0, 1], [2, 3]],
+  final: [[0, 1]]
+};
 
 let standings = defaultStandings();
 let scores = defaultScores();
 let syncMode = "local";
 let knockoutFilter = "all";
+let bracket = loadBracket();
 let matchRefreshTimer = null;
 
 function getScore(m) {
@@ -547,6 +564,301 @@ function createKnockoutCard(k) {
   return card;
 }
 
+function parseSlot(text) {
+  if (!text) return null;
+  const t = text.trim();
+  const single = t.match(/(1er|2e)\s+groupe\s+([A-L])/i);
+  if (single) return { kind: single[1].toLowerCase(), groups: [single[2].toUpperCase()] };
+  const third = t.match(/3e\s*\(([A-Z/]+)\)/i);
+  if (third) return { kind: "3e", groups: third[1].split("/").map((g) => g.toUpperCase()) };
+  return null;
+}
+
+function slotShortLabel(slot) {
+  if (!slot) return "?";
+  if (slot.kind === "1er") return `1ᵉʳ ${slot.groups[0]}`;
+  if (slot.kind === "2e") return `2ᵉ ${slot.groups[0]}`;
+  return `3ᵉ (${slot.groups.join("/")})`;
+}
+
+const ROUND16_MATCHES = KNOCKOUT
+  .filter((k) => k.phase === "16es")
+  .map((k, i) => {
+    const sides = k.label.split(/\s+vs\s+/i);
+    return {
+      idx: i,
+      number: 73 + i,
+      label: k.label,
+      slots: [parseSlot(sides[0]), parseSlot(sides[1])]
+    };
+  });
+
+function eligibleTeamsForSlot(slot) {
+  if (!slot) return [];
+  const set = new Set();
+  slot.groups.forEach((g) => (GROUPS[g] || []).forEach((t) => set.add(t)));
+  return [...set].sort((a, b) => a.localeCompare(b, "fr"));
+}
+
+function emptyBracket() {
+  return {
+    seeds: Array.from({ length: 16 }, () => ({ home: "", away: "" })),
+    picks: {
+      r32: Array(16).fill(""),
+      r16: Array(8).fill(""),
+      qf: Array(4).fill(""),
+      sf: Array(2).fill(""),
+      final: Array(1).fill("")
+    }
+  };
+}
+
+function normalizeBracket(data) {
+  const base = emptyBracket();
+  if (!data || typeof data !== "object") return base;
+
+  if (Array.isArray(data.seeds)) {
+    data.seeds.slice(0, 16).forEach((seed, i) => {
+      base.seeds[i] = {
+        home: seed?.home || "",
+        away: seed?.away || ""
+      };
+    });
+  }
+
+  BRACKET_ROUNDS.forEach((round) => {
+    if (!Array.isArray(data.picks?.[round.key])) return;
+    base.picks[round.key] = data.picks[round.key].slice(0, round.matchCount);
+    while (base.picks[round.key].length < round.matchCount) base.picks[round.key].push("");
+  });
+
+  return base;
+}
+
+function validateBracket() {
+  ROUND16_MATCHES.forEach((m, i) => {
+    const seed = bracket.seeds[i];
+    if (!seed) return;
+    const eligibleHome = eligibleTeamsForSlot(m.slots[0]);
+    const eligibleAway = eligibleTeamsForSlot(m.slots[1]);
+    if (seed.home && !eligibleHome.includes(seed.home)) seed.home = "";
+    if (seed.away && !eligibleAway.includes(seed.away)) seed.away = "";
+  });
+
+  BRACKET_ROUNDS.forEach((round) => {
+    for (let i = 0; i < round.matchCount; i += 1) {
+      const [a, b] = getBracketTeams(round.key, i);
+      const pick = bracket.picks[round.key][i];
+      if (pick && pick !== a && pick !== b) bracket.picks[round.key][i] = "";
+    }
+  });
+}
+
+function loadBracket() {
+  try {
+    return normalizeBracket(JSON.parse(localStorage.getItem(BRACKET_KEY)));
+  } catch {
+    return emptyBracket();
+  }
+}
+
+function persistBracket() {
+  localStorage.setItem(BRACKET_KEY, JSON.stringify(bracket));
+}
+
+function clearBracketAfter(roundKey) {
+  const idx = BRACKET_ROUNDS.findIndex((round) => round.key === roundKey);
+  BRACKET_ROUNDS.slice(idx + 1).forEach((round) => {
+    bracket.picks[round.key] = Array(round.matchCount).fill("");
+  });
+}
+
+function setBracketSeed(matchIndex, side, team) {
+  if (!bracket.seeds[matchIndex]) return;
+  bracket.seeds[matchIndex][side] = team;
+  bracket.picks.r32[matchIndex] = "";
+  clearBracketAfter("r32");
+  persistBracket();
+  renderKnockout();
+}
+
+function setBracketWinner(roundKey, matchIndex, team) {
+  if (!team) return;
+  bracket.picks[roundKey][matchIndex] = team;
+  clearBracketAfter(roundKey);
+  persistBracket();
+  renderKnockout();
+}
+
+function getBracketTeams(roundKey, matchIndex) {
+  if (roundKey === "r32") {
+    const seed = bracket.seeds[matchIndex] || { home: "", away: "" };
+    return [seed.home, seed.away];
+  }
+
+  const pair = BRACKET_PAIRS[roundKey]?.[matchIndex];
+  if (!pair) return ["", ""];
+  const prevKey = BRACKET_ROUNDS[BRACKET_ROUNDS.findIndex((round) => round.key === roundKey) - 1].key;
+  return [
+    bracket.picks[prevKey][pair[0]] || "",
+    bracket.picks[prevKey][pair[1]] || ""
+  ];
+}
+
+function rankedGroup(g) {
+  return [...GROUPS[g]].sort((a, b) => {
+    const diff = (standings[g]?.[b] ?? 0) - (standings[g]?.[a] ?? 0);
+    return diff !== 0 ? diff : a.localeCompare(b, "fr");
+  });
+}
+
+function autoFillBracket() {
+  ROUND16_MATCHES.forEach((m, i) => {
+    ["home", "away"].forEach((side, sideIdx) => {
+      const slot = m.slots[sideIdx];
+      if (!slot || slot.kind === "3e") return;
+      const ranked = rankedGroup(slot.groups[0]);
+      const team = slot.kind === "1er" ? ranked[0] : ranked[1];
+      if (team) bracket.seeds[i][side] = team;
+    });
+  });
+  BRACKET_ROUNDS.forEach((round) => {
+    bracket.picks[round.key] = Array(round.matchCount).fill("");
+  });
+  persistBracket();
+  renderKnockout();
+  showToast("info", "Bracket pré-rempli", "1ᵉʳˢ et 2ᵉˢ d'après les classements actuels. Les 3ᵉˢ restent à compléter.");
+}
+
+function bracketTeamSelect(matchIndex, side, value, slot) {
+  const teams = eligibleTeamsForSlot(slot);
+  const placeholder = slot ? `— ${slotShortLabel(slot)} —` : "Choisir une équipe";
+  const options = ["", ...teams]
+    .map((team) => `<option value="${team}"${team === value ? " selected" : ""}>${team ? teamLabel(team) : placeholder}</option>`)
+    .join("");
+  return `<select class="bracket-select" data-bracket-seed="${matchIndex}" data-side="${side}" title="${placeholder}">${options}</select>`;
+}
+
+function bracketWinnerButton(roundKey, matchIndex, team, side) {
+  const picked = bracket.picks[roundKey][matchIndex] === team;
+  const disabled = !team ? " disabled" : "";
+  return `
+    <button type="button" class="bracket-team${picked ? " picked" : ""}" data-bracket-winner="${team}" data-round="${roundKey}" data-match="${matchIndex}"${disabled}>
+      <span class="bracket-side">${side}</span>
+      <span>${team ? teamLabel(team) : "En attente"}</span>
+    </button>
+  `;
+}
+
+function renderBracketBuilder() {
+  const box = document.getElementById("bracketBuilder");
+  if (!box) return;
+
+  const champion = bracket.picks.final[0];
+  const finalTeams = getBracketTeams("final", 0).filter(Boolean);
+  box.innerHTML = `
+    <div class="bracket-head">
+      <div>
+        <h3>Mon bracket</h3>
+        <p class="section-hint">Chaque slot des 16es est limité aux équipes qui peuvent y aller selon le tirage FIFA. Clique sur le vainqueur pour le faire avancer.</p>
+      </div>
+      <div class="bracket-actions">
+        <button type="button" class="admin-btn outline" id="bracketAutofill">Remplir auto</button>
+        <button type="button" class="admin-btn outline" id="bracketShare">Partager</button>
+        <button type="button" class="admin-btn outline danger" id="bracketReset">Réinitialiser</button>
+      </div>
+    </div>
+    <div class="bracket-champion ${champion ? "filled" : ""}">
+      <span class="bracket-trophy">🏆</span>
+      <div>
+        <span class="bracket-champion-label">Mon champion</span>
+        <strong>${champion ? teamLabel(champion) : "À déterminer"}</strong>
+        ${finalTeams.length === 2 ? `<small>Finale prévue : ${teamLabel(finalTeams[0])} vs ${teamLabel(finalTeams[1])}</small>` : ""}
+      </div>
+    </div>
+    <div class="bracket-scroll">
+      <div class="bracket-grid"></div>
+    </div>
+  `;
+
+  const grid = box.querySelector(".bracket-grid");
+  BRACKET_ROUNDS.forEach((round) => {
+    const col = document.createElement("div");
+    col.className = "bracket-round";
+    col.innerHTML = `<h4>${round.label}</h4>`;
+
+    for (let i = 0; i < round.matchCount; i += 1) {
+      const [home, away] = getBracketTeams(round.key, i);
+      const card = document.createElement("div");
+      card.className = "bracket-match";
+      const r32 = round.key === "r32" ? ROUND16_MATCHES[i] : null;
+      const slotInfo = r32
+        ? `<div class="bracket-slot">${slotShortLabel(r32.slots[0])} <span class="bracket-slot-vs">vs</span> ${slotShortLabel(r32.slots[1])}</div>`
+        : "";
+      card.innerHTML = `
+        <div class="bracket-match-title">${round.short} ${i + 1}${r32 ? ` <span class="bracket-fifa">M${r32.number}</span>` : ""}</div>
+        ${slotInfo}
+        ${r32 ? `
+          <div class="bracket-seeds">
+            ${bracketTeamSelect(i, "home", home, r32.slots[0])}
+            ${bracketTeamSelect(i, "away", away, r32.slots[1])}
+          </div>
+        ` : ""}
+        <div class="bracket-picks">
+          ${bracketWinnerButton(round.key, i, home, "A")}
+          ${bracketWinnerButton(round.key, i, away, "B")}
+        </div>
+      `;
+      col.appendChild(card);
+    }
+
+    grid.appendChild(col);
+  });
+
+  box.querySelectorAll(".bracket-select").forEach((select) => {
+    select.addEventListener("change", () => {
+      setBracketSeed(parseInt(select.dataset.bracketSeed, 10), select.dataset.side, select.value);
+    });
+  });
+
+  box.querySelectorAll("[data-bracket-winner]").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      setBracketWinner(btn.dataset.round, parseInt(btn.dataset.match, 10), btn.dataset.bracketWinner);
+    });
+  });
+
+  box.querySelector("#bracketReset")?.addEventListener("click", () => {
+    if (!window.confirm("Réinitialiser ton bracket ?")) return;
+    bracket = emptyBracket();
+    persistBracket();
+    renderKnockout();
+  });
+
+  box.querySelector("#bracketShare")?.addEventListener("click", shareBracket);
+  box.querySelector("#bracketAutofill")?.addEventListener("click", autoFillBracket);
+}
+
+function shareBracket() {
+  const champion = bracket.picks.final[0];
+  const finalTeams = getBracketTeams("final", 0).filter(Boolean);
+  const text = [
+    "🏆 Mon bracket CDM 2026",
+    finalTeams.length === 2 ? `Finale : ${teamLabel(finalTeams[0])} vs ${teamLabel(finalTeams[1])}` : "Finale : à déterminer",
+    champion ? `Champion : ${teamLabel(champion)}` : "Champion : à déterminer",
+    window.location.href
+  ].join("\n");
+
+  const copy = navigator.clipboard?.writeText?.(text);
+  if (!copy) {
+    showToast("info", "Bracket", text, 7000);
+    return;
+  }
+
+  copy
+    .then(() => showToast("success", "Bracket copié", "Tu peux le coller à tes potes."))
+    .catch(() => showToast("info", "Bracket", text, 7000));
+}
+
 function canEditStandings() {
   // Toujours nécessiter d'être admin, même en mode local
   return isAdminUser();
@@ -624,10 +936,108 @@ function render() {
 }
 
 function renderHome() {
+  renderLiveBanner();
   renderCountdown();
-  renderNextMatch();
   renderHomeStats();
+  renderBracketTease();
+  renderTodayHome();
+  renderLastResultsHome();
   renderQuickNav();
+}
+
+function renderLiveBanner() {
+  const el = document.getElementById("liveBanner");
+  if (!el) return;
+  const live = matches.filter((m) => getMatchStatus(m).key === "live");
+  if (!live.length) {
+    el.classList.add("hidden");
+    el.innerHTML = "";
+    return;
+  }
+  el.classList.remove("hidden");
+  el.innerHTML = live
+    .map((m) => {
+      const s = getScore(m);
+      const score = s ? `<span class="live-score">${s.h} – ${s.a}</span>` : `<span class="live-score muted">– vs –</span>`;
+      const elapsed = Math.max(0, Math.floor((Date.now() - getDateObj(m).getTime()) / 60000));
+      const minute = elapsed > 0 ? `${Math.min(elapsed, 120)}'` : "Coup d'envoi";
+      return `
+        <button type="button" class="live-card" data-match-jump="${m.id}">
+          <span class="live-dot"></span>
+          <span class="live-status">EN DIRECT · ${minute}</span>
+          <span class="live-teams">${teamLabel(m.h)} ${score} ${teamLabel(m.a)}</span>
+        </button>
+      `;
+    })
+    .join("");
+  el.querySelectorAll("[data-match-jump]").forEach((btn) => {
+    btn.addEventListener("click", () => show(1));
+  });
+}
+
+function renderBracketTease() {
+  const el = document.getElementById("bracketTease");
+  if (!el) return;
+  const empty = bracket.seeds.every((s) => !s.home && !s.away);
+  if (!empty) {
+    el.classList.add("hidden");
+    el.innerHTML = "";
+    return;
+  }
+  el.classList.remove("hidden");
+  el.innerHTML = `
+    <div class="bracket-tease-inner">
+      <span class="bracket-tease-icon">🏆</span>
+      <div>
+        <strong>Fais ton bracket de prédictions</strong>
+        <span>Qui ira en finale ? Qui sera champion du monde ?</span>
+      </div>
+      <button type="button" class="admin-btn" data-page="10">C'est parti →</button>
+    </div>
+  `;
+  el.querySelector("[data-page]")?.addEventListener("click", () => show(10));
+}
+
+function renderTodayHome() {
+  const el = document.getElementById("todayHome");
+  if (!el) return;
+  el.innerHTML = "";
+
+  const todayMatches = sortMatches(matches.filter((m) => m.date === todayKey()));
+  const liveOrUpcoming = todayMatches.filter((m) => getMatchStatus(m).key !== "done");
+
+  if (liveOrUpcoming.length) {
+    liveOrUpcoming.slice(0, 4).forEach((m) => el.appendChild(createCard(m)));
+    return;
+  }
+
+  const next = sortMatches(matches.filter((m) => getMatchStatus(m).key === "upcoming"))[0];
+  if (!next) {
+    el.innerHTML = "<p class='empty-msg'>Phase de groupes terminée.</p>";
+    return;
+  }
+  const hint = document.createElement("p");
+  hint.className = "section-hint";
+  hint.textContent = "Aucun match aujourd'hui — prochain au programme :";
+  el.appendChild(hint);
+  el.appendChild(createCard(next));
+}
+
+function renderLastResultsHome() {
+  const el = document.getElementById("lastResultsHome");
+  if (!el) return;
+  el.innerHTML = "";
+
+  const done = matches
+    .filter((m) => getMatchStatus(m).key === "done" && hasScore(m))
+    .sort((a, b) => getDateObj(b) - getDateObj(a))
+    .slice(0, 3);
+
+  if (!done.length) {
+    el.innerHTML = "<p class='empty-msg'>Aucun match terminé pour le moment.</p>";
+    return;
+  }
+  done.forEach((m) => el.appendChild(createCard(m)));
 }
 
 function renderHomeStats() {
@@ -736,6 +1146,8 @@ function renderKnockout() {
   const filters = document.getElementById("knockoutFilters");
   const list = document.getElementById("knockoutList");
   if (!filters || !list) return;
+
+  renderBracketBuilder();
 
   const phases = ["all", "16es", "8es", "qf", "df", "3e", "finale"];
   filters.innerHTML = "";
@@ -924,22 +1336,14 @@ function renderCountdown() {
   const days = Math.floor(diff / 86400000);
   const hours = Math.floor((diff % 86400000) / 3600000);
   const mins = Math.floor((diff % 3600000) / 60000);
-  el.innerHTML = `Coup d'envoi dans <strong>${days}</strong> j <strong>${hours}</strong> h <strong>${mins}</strong> min`;
-}
-
-function renderNextMatch() {
-  const el = document.getElementById("nextMatch");
-  if (!el) return;
-  const now = new Date();
-  const upcoming = sortMatches(
-    matches.filter((m) => getMatchStatus(m).key === "upcoming")
-  );
-  if (!upcoming.length) {
-    el.innerHTML = "<p class='empty-msg'>Phase de groupes terminée.</p>";
-    return;
-  }
-  el.innerHTML = "";
-  el.appendChild(createCard(upcoming[0]));
+  el.innerHTML = `
+    <span class="countdown-label">Coup d'envoi dans</span>
+    <div class="countdown-grid">
+      <div class="countdown-unit"><span class="countdown-n">${days}</span><span class="countdown-u">jours</span></div>
+      <div class="countdown-unit"><span class="countdown-n">${hours}</span><span class="countdown-u">heures</span></div>
+      <div class="countdown-unit"><span class="countdown-n">${mins}</span><span class="countdown-u">min</span></div>
+    </div>
+  `;
 }
 
 function renderAdminBar() {
@@ -1206,6 +1610,40 @@ function initTheme() {
   if (btn) btn.textContent = saved === "dark" ? "🌙" : "☀️";
 }
 
+function openWelcome() {
+  const modal = document.getElementById("welcomeModal");
+  if (!modal) return;
+  modal.classList.remove("hidden");
+  document.body.classList.add("modal-open");
+}
+
+function closeWelcome() {
+  const modal = document.getElementById("welcomeModal");
+  if (!modal) return;
+  modal.classList.add("hidden");
+  document.body.classList.remove("modal-open");
+  localStorage.setItem(WELCOME_KEY, "1");
+}
+
+function initWelcome() {
+  const modal = document.getElementById("welcomeModal");
+  if (!modal) return;
+
+  modal.querySelectorAll("[data-welcome-dismiss]").forEach((btn) => {
+    btn.addEventListener("click", closeWelcome);
+  });
+
+  document.addEventListener("keydown", (e) => {
+    if (e.key === "Escape" && !modal.classList.contains("hidden")) closeWelcome();
+  });
+
+  document.getElementById("reopenWelcome")?.addEventListener("click", openWelcome);
+
+  if (!localStorage.getItem(WELCOME_KEY)) {
+    setTimeout(openWelcome, 350);
+  }
+}
+
 function showToast(type, title, message, duration = 4000) {
   const container = document.getElementById("toastContainer");
   if (!container) return;
@@ -1324,7 +1762,9 @@ function initNav() {
 
 function tickLiveSections() {
   renderCountdown();
-  renderNextMatch();
+  renderLiveBanner();
+  renderTodayHome();
+  renderLastResultsHome();
   renderHomeStats();
   renderToday();
 }
@@ -1353,6 +1793,8 @@ function scheduleMatchRefresh() {
 async function boot() {
   initTheme();
   initNav();
+  initWelcome();
+  validateBracket();
   const result = await initStandingsSync();
   syncMode = result.mode;
   if (window.Betting) window.Betting.init();

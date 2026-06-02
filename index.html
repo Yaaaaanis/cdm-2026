@@ -35,15 +35,39 @@
 <div id="menuBackdrop" class="menu-backdrop" aria-hidden="true"></div>
 
 <section class="page active" id="home">
-  <h1>Coupe du monde 2026</h1>
-  <p class="subtitle">USA · Canada · Mexique</p>
-  <div id="countdown" class="hero-box"></div>
+  <div id="liveBanner" class="live-banner hidden"></div>
+
+  <header class="hero">
+    <h1>Coupe du monde 2026</h1>
+    <p class="subtitle">USA · Canada · Mexique · du 11 juin au 19 juillet</p>
+    <div id="countdown" class="hero-box"></div>
+  </header>
+
   <div id="homeStats" class="stats-row"></div>
-  <h2 class="block-title">Prochain match</h2>
-  <div id="nextMatch"></div>
+
+  <div id="bracketTease" class="bracket-tease hidden"></div>
+
+  <section class="home-section">
+    <div class="home-section-header">
+      <h2 class="home-section-title">📅 Aujourd'hui</h2>
+      <button type="button" class="home-section-link" data-page="1">Voir tout →</button>
+    </div>
+    <div id="todayHome" class="match-list"></div>
+  </section>
+
+  <section class="home-section">
+    <div class="home-section-header">
+      <h2 class="home-section-title">📊 Derniers résultats</h2>
+    </div>
+    <div id="lastResultsHome" class="match-list"></div>
+  </section>
+
   <h2 class="block-title">Accès rapide</h2>
   <div id="quickNav" class="quick-nav"></div>
-  <p class="footer-note">Heures Paris · Statuts mis à jour automatiquement (à venir / en cours / terminé).</p>
+  <p class="footer-note">
+    Heures Paris · Statuts mis à jour automatiquement.
+    <button type="button" id="reopenWelcome" class="link-btn">Revoir la présentation</button>
+  </p>
 </section>
 
 <section class="page">
@@ -106,6 +130,8 @@
 <section class="page">
   <h2>🏆 Phases finales</h2>
   <p class="section-hint">16es → finale · affiches selon le tirage FIFA</p>
+  <div id="bracketBuilder" class="bracket-builder"></div>
+  <h3 class="block-title">Calendrier officiel</h3>
   <div id="knockoutFilters" class="chip-row"></div>
   <div id="knockoutList" class="match-list"></div>
 </section>
@@ -152,6 +178,26 @@
 <button type="button" id="scrollTop" class="scroll-top hidden" aria-label="Remonter">↑</button>
 
 <div id="toastContainer" class="toast-container"></div>
+
+<div id="welcomeModal" class="welcome-modal hidden" role="dialog" aria-modal="true" aria-labelledby="welcomeTitle">
+  <div class="welcome-overlay" data-welcome-dismiss></div>
+  <div class="welcome-card">
+    <button type="button" class="welcome-close" data-welcome-dismiss aria-label="Fermer">✕</button>
+    <div class="welcome-emoji">🏆</div>
+    <h2 id="welcomeTitle">Bienvenue sur CDM 2026 !</h2>
+    <p class="welcome-intro">Tout ce qu'il te faut pour vivre la Coupe du monde aux États-Unis, au Canada et au Mexique.</p>
+    <ul class="welcome-features">
+      <li><span class="welcome-icon">📅</span><div><strong>Calendrier complet</strong><span>104 matchs · phase de groupes + phases finales · heures de Paris</span></div></li>
+      <li><span class="welcome-icon">📊</span><div><strong>Classements en direct</strong><span>Suis les 12 groupes et qui se qualifie pour les 16es</span></div></li>
+      <li><span class="welcome-icon">⭐</span><div><strong>Tes équipes favorites</strong><span>Clique l'étoile à côté d'un pays pour le suivre</span></div></li>
+      <li><span class="welcome-icon">🏆</span><div><strong>Mon bracket</strong><span>Prédis qui ira en finale et qui sera champion du monde</span></div></li>
+      <li><span class="welcome-icon">👥</span><div><strong>Effectifs officiels</strong><span>26 joueurs de France, Maroc, Portugal, Brésil, Argentine…</span></div></li>
+      <li><span class="welcome-icon">🇫🇷</span><div><strong>Pages dédiées</strong><span>France, Maroc, Portugal — matchs et infos en un coup d'œil</span></div></li>
+    </ul>
+    <p class="welcome-tip">💡 Astuce : ajoute l'app à ton écran d'accueil pour un accès rapide.</p>
+    <button type="button" class="welcome-cta" data-welcome-dismiss>C'est parti ! ⚽</button>
+  </div>
+</div>
 
 <script src="config.js"></script>
 <script src="flags.js"></script>
