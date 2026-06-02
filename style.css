@@ -1,20 +1,25 @@
 :root,
 [data-theme="dark"] {
-  --bg: #0c0e14;
-  --surface: #171a24;
-  --surface2: #232838;
-  --border: #2e3445;
+  --bg: #151515;
+  --surface: #1f1f1f;
+  --surface2: #2a2a2a;
+  --border: #353535;
   --text: #f1f5fa;
-  --muted: #94a3b8;
-  --gold: #ffd147;
-  --gold-deep: #d99e1f;
+  --muted: #9da4ad;
+  --gold: #D4AF37;
+  --gold-light: #E5C158;
+  --gold-deep: #A88A24;
+  --gold-darkest: #6B5615;
+  --green: #2E7D32;
+  --green-light: #43A047;
+  --green-deep: #1B5E20;
   --fr: #4d7eff;
   --ma: #ff3859;
   --pt: #10d18a;
   --be: #facc15;
-  --live: #ff4d6d;
-  --ok: #34d399;
-  --glow: rgba(255, 209, 71, 0.08);
+  --live: #f43f5e;
+  --ok: #2E7D32;
+  --glow: rgba(212, 175, 55, 0.06);
   --header-h: 52px;
 }
 
@@ -25,9 +30,14 @@
   --border: #d1d9e6;
   --text: #11161f;
   --muted: #5a6878;
-  --gold: #b88a0d;
-  --gold-deep: #8a6306;
-  --glow: rgba(184, 138, 13, 0.06);
+  --gold: #A88A24;
+  --gold-light: #C7A538;
+  --gold-deep: #6B5615;
+  --gold-darkest: #4A3C0E;
+  --green: #2E7D32;
+  --green-light: #43A047;
+  --green-deep: #1B5E20;
+  --glow: rgba(168, 138, 36, 0.05);
 }
 
 * {
@@ -152,7 +162,7 @@ body.menu-open .menu-backdrop {
   padding: 8px 12px;
   background: linear-gradient(135deg, var(--gold) 0%, var(--gold-deep) 100%);
   color: #0a0e16;
-  box-shadow: 0 2px 8px rgba(255, 209, 71, 0.25);
+  box-shadow: 0 2px 8px rgba(212, 175, 55, 0.25);
   border-radius: 20px;
   font-weight: 800;
   font-size: 0.9rem;
@@ -365,7 +375,7 @@ h3,
   padding: 14px;
   border: 1px dashed var(--gold);
   border-radius: 14px;
-  background: rgba(255, 209, 71, 0.08);
+  background: rgba(212, 175, 55, 0.08);
 }
 
 .bracket-tease-icon {
@@ -537,7 +547,7 @@ h3,
 }
 
 .card.has-score {
-  border-color: rgba(255, 209, 71, 0.35);
+  border-color: rgba(212, 175, 55, 0.35);
 }
 
 .score-row {
@@ -740,7 +750,7 @@ h3,
 .fav-star.on {
   color: var(--gold);
   border-color: var(--gold);
-  background: rgba(255, 209, 71, 0.15);
+  background: rgba(212, 175, 55, 0.15);
 }
 
 .team-cell {
@@ -1163,7 +1173,7 @@ h3,
 
 .bet-card.won {
   border-color: var(--ok);
-  background: rgba(52, 211, 153, 0.1);
+  background: rgba(46, 125, 50, 0.1);
 }
 
 .bet-card.lost {
@@ -1261,7 +1271,7 @@ h3,
 
 .betting-option.selected {
   border-color: var(--gold);
-  background: rgba(255, 209, 71, 0.15);
+  background: rgba(212, 175, 55, 0.15);
   color: var(--gold);
 }
 
@@ -1386,7 +1396,7 @@ h3,
   padding: 12px;
   border: 1px dashed var(--border);
   border-radius: 12px;
-  background: rgba(255, 209, 71, 0.08);
+  background: rgba(212, 175, 55, 0.08);
   margin-bottom: 12px;
 }
 
@@ -1519,7 +1529,7 @@ h3,
 
 .bracket-team.picked {
   border-color: var(--gold);
-  background: rgba(255, 209, 71, 0.16);
+  background: rgba(212, 175, 55, 0.16);
   color: var(--gold);
 }
 
@@ -1846,7 +1856,7 @@ body.modal-open {
 }
 
 .welcome-tip {
-  background: rgba(255, 209, 71, 0.1);
+  background: rgba(212, 175, 55, 0.1);
   border: 1px dashed var(--gold);
   border-radius: 10px;
   padding: 10px 12px;
@@ -1909,7 +1919,7 @@ body.modal-open {
 
 .toast.success {
   border-color: var(--ok);
-  background: rgba(52, 211, 153, 0.1);
+  background: rgba(46, 125, 50, 0.1);
 }
 
 .toast.error {
@@ -1919,7 +1929,7 @@ body.modal-open {
 
 .toast.info {
   border-color: var(--gold);
-  background: rgba(255, 209, 71, 0.1);
+  background: rgba(212, 175, 55, 0.1);
 }
 
 .toast-icon {
