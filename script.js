@@ -587,6 +587,36 @@ function render() {
     }
   });
 
+  if (q) {
+    const allTeams = new Set();
+    Object.values(GROUPS).forEach((teams) => teams.forEach((t) => allTeams.add(t)));
+    const matchingTeams = [...allTeams]
+      .filter((t) => t.toLowerCase().includes(q))
+      .sort((a, b) => a.localeCompare(b, "fr"));
+    const resultsEl = document.getElementById("searchResults");
+    if (resultsEl && matchingTeams.length) {
+      const header = document.createElement("p");
+      header.className = "section-hint";
+      header.textContent = `Équipe${matchingTeams.length > 1 ? "s" : ""} trouvée${matchingTeams.length > 1 ? "s" : ""}`;
+      resultsEl.prepend(header);
+      const list = document.createElement("div");
+      list.className = "team-results";
+      matchingTeams.forEach((team) => {
+        const hasRoster = hasSquad(team);
+        const card = document.createElement("button");
+        card.type = "button";
+        card.className = "team-result-card";
+        card.dataset.teamRoster = team;
+        card.innerHTML = `
+          <span class="team-result-name">${teamLabel(team)}</span>
+          <span class="team-result-cta">${hasRoster ? "Voir l'effectif →" : "Détails →"}</span>
+        `;
+        list.appendChild(card);
+      });
+      header.after(list);
+    }
+  }
+
   renderHome();
   renderToday();
   renderFavorites();
@@ -976,11 +1006,12 @@ function renderGroupsOverview() {
     const ol = mini.querySelector("ol");
     sorted.forEach((team, i) => {
       const li = document.createElement("li");
-      li.innerHTML = `<span>${i + 1}. ${teamFavButton(team)} ${teamLabel(team)}</span><strong>${standings[g][team] ?? 0} pts</strong>`;
+      li.innerHTML = `<span>${i + 1}. ${teamFavButton(team)} <button type="button" class="team-link-btn inline" data-team-roster="${team}">${teamLabel(team)}</button></span><strong>${standings[g][team] ?? 0} pts</strong>`;
       bindFavStars(li);
       ol.appendChild(li);
     });
-    mini.onclick = () => {
+    mini.onclick = (e) => {
+      if (e.target.closest("[data-team-roster]") || e.target.closest(".fav-star")) return;
       document.getElementById("groupTabs").dataset.active = g;
       box.classList.add("hidden");
       renderGroups();
@@ -1029,7 +1060,7 @@ function renderGroups() {
   sorted.forEach((team, i) => {
     const pts = standings[active][team] ?? 0;
     const tr = document.createElement("tr");
-    const teamCell = `<td class="team-cell">${teamFavButton(team)} <span>${teamLabel(team)}</span></td>`;
+    const teamCell = `<td class="team-cell">${teamFavButton(team)} <button type="button" class="team-link-btn" data-team-roster="${team}" title="Voir l'effectif">${teamLabel(team)}</button></td>`;
     if (editable) {
       tr.innerHTML = `
         <td>${i + 1}</td>
@@ -1084,6 +1115,9 @@ function renderGroups() {
   }
 }
 
+const ROSTER_PAGE_INDEX = 13;
+let prevRosterPage = 0;
+
 function show(i) {
   document.querySelectorAll(".page").forEach((p, idx) => {
     p.classList.toggle("active", idx === i);
@@ -1096,6 +1130,73 @@ function show(i) {
   if (i === 9) renderGroups();
   if (i === 11) document.getElementById("search")?.focus();
   if (i === 12) renderBettingPage();
+}
+
+function openRoster(team) {
+  if (!team) return;
+  const currentActive = Array.from(document.querySelectorAll(".page")).findIndex((p) =>
+    p.classList.contains("active")
+  );
+  if (currentActive !== ROSTER_PAGE_INDEX) prevRosterPage = currentActive >= 0 ? currentActive : 0;
+
+  const title = document.getElementById("rosterTitle");
+  const meta = document.getElementById("rosterMeta");
+  const content = document.getElementById("rosterContent");
+  if (!title || !content) return;
+
+  title.innerHTML = `${flag(team)} ${team}`;
+
+  const squad = SQUADS[team];
+  if (!squad) {
+    if (meta) meta.textContent = "Effectif non encore disponible pour cette équipe.";
+    content.innerHTML = `
+      <div class="empty-msg">
+        L'effectif officiel de <strong>${team}</strong> n'a pas encore été ajouté.<br>
+        Tu peux quand même rechercher des joueurs sur
+        <a href="https://www.transfermarkt.fr/schnellsuche/ergebnis/schnellsuche?query=${encodeURIComponent(team)}" target="_blank" rel="noopener">Transfermarkt</a>
+        ou
+        <a href="https://www.footmercato.net/recherche/?q=${encodeURIComponent(team)}" target="_blank" rel="noopener">Footmercato</a>.
+      </div>
+    `;
+  } else {
+    if (meta) {
+      const dateStr = squad.announceDate
+        ? new Date(squad.announceDate).toLocaleDateString("fr-FR", { day: "numeric", month: "long", year: "numeric" })
+        : "";
+      meta.innerHTML = `Sélectionneur : <strong>${squad.coach}</strong>${dateStr ? ` · Liste annoncée le ${dateStr}` : ""}${squad.note ? ` · <em>${squad.note}</em>` : ""}`;
+    }
+
+    const html = Object.entries(squad.groups)
+      .map(([poste, players]) => {
+        const rows = players
+          .map((p) => {
+            const links = playerLinks(p.name);
+            return `
+              <li class="player-row">
+                <div class="player-info">
+                  <span class="player-name">${p.name}</span>
+                  <span class="player-club">${p.club}</span>
+                </div>
+                <div class="player-links">
+                  <a class="player-link tm" href="${links.tm}" target="_blank" rel="noopener" title="Fiche Transfermarkt">TM</a>
+                  <a class="player-link fm" href="${links.fm}" target="_blank" rel="noopener" title="Recherche Footmercato">FM</a>
+                </div>
+              </li>
+            `;
+          })
+          .join("");
+        return `
+          <div class="roster-group">
+            <h3 class="roster-poste">${poste} <span class="roster-count">(${players.length})</span></h3>
+            <ul class="player-list">${rows}</ul>
+          </div>
+        `;
+      })
+      .join("");
+    content.innerHTML = html;
+  }
+
+  show(ROSTER_PAGE_INDEX);
 }
 
 function initTheme() {
@@ -1209,6 +1310,16 @@ function initNav() {
     topBtn.classList.toggle("hidden", window.scrollY < 400);
   });
   topBtn?.addEventListener("click", () => window.scrollTo({ top: 0, behavior: "smooth" }));
+
+  document.getElementById("rosterBack")?.addEventListener("click", () => show(prevRosterPage || 0));
+
+  document.body.addEventListener("click", (e) => {
+    const btn = e.target.closest("[data-team-roster]");
+    if (!btn) return;
+    e.preventDefault();
+    e.stopPropagation();
+    openRoster(btn.dataset.teamRoster);
+  });
 }
 
 function tickLiveSections() {
