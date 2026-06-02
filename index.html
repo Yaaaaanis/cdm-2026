@@ -13,7 +13,7 @@
 
 <header class="top-bar">
   <button type="button" class="logo-btn" data-page="0">🏆 CDM</button>
-  <nav class="top-nav" aria-label="Navigation">
+  <nav class="top-nav" id="topNav" aria-label="Navigation">
     <button type="button" data-page="0" class="active">Accueil</button>
     <button type="button" data-page="1">Aujourd'hui</button>
     <button type="button" data-page="2">J.1</button>
@@ -30,7 +30,9 @@
   </nav>
   <div class="wallet-display" id="walletBalance">0 💰</div>
   <button type="button" id="themeToggle" class="icon-btn" aria-label="Changer de thème">🌙</button>
+  <button type="button" id="menuToggle" class="icon-btn menu-btn" aria-label="Ouvrir le menu" aria-expanded="false" aria-controls="topNav">☰</button>
 </header>
+<div id="menuBackdrop" class="menu-backdrop" aria-hidden="true"></div>
 
 <section class="page active" id="home">
   <h1>Coupe du monde 2026</h1>
