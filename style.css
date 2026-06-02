@@ -1,29 +1,33 @@
 :root,
 [data-theme="dark"] {
-  --bg: #070b14;
-  --surface: #0f1726;
-  --surface2: #1a2438;
-  --border: #1c2a40;
-  --text: #e6eefc;
-  --muted: #7a8fb3;
-  --gold: #f5c542;
-  --fr: #2f6fff;
-  --ma: #c70039;
-  --pt: #00b894;
-  --be: #f0c419;
-  --live: #ff4757;
-  --ok: #6ee7a0;
+  --bg: #0c0e14;
+  --surface: #171a24;
+  --surface2: #232838;
+  --border: #2e3445;
+  --text: #f1f5fa;
+  --muted: #94a3b8;
+  --gold: #ffd147;
+  --gold-deep: #d99e1f;
+  --fr: #4d7eff;
+  --ma: #ff3859;
+  --pt: #10d18a;
+  --be: #facc15;
+  --live: #ff4d6d;
+  --ok: #34d399;
+  --glow: rgba(255, 209, 71, 0.08);
   --header-h: 52px;
 }
 
 [data-theme="light"] {
-  --bg: #f0f4fa;
+  --bg: #f5f7fb;
   --surface: #ffffff;
-  --surface2: #e8eef6;
-  --border: #c5d0e0;
-  --text: #1a2332;
-  --muted: #5a6d8a;
-  --gold: #c9920a;
+  --surface2: #edf1f7;
+  --border: #d1d9e6;
+  --text: #11161f;
+  --muted: #5a6878;
+  --gold: #b88a0d;
+  --gold-deep: #8a6306;
+  --glow: rgba(184, 138, 13, 0.06);
 }
 
 * {
@@ -34,6 +38,10 @@ body {
   margin: 0;
   font-family: "Segoe UI", system-ui, sans-serif;
   background: var(--bg);
+  background-image:
+    radial-gradient(circle at 85% -10%, var(--glow), transparent 45%),
+    radial-gradient(circle at 0% 100%, var(--glow), transparent 35%);
+  background-attachment: fixed;
   color: var(--text);
   line-height: 1.45;
   padding-bottom: 5rem;
@@ -142,8 +150,9 @@ body.menu-open .menu-backdrop {
 .wallet-display {
   flex-shrink: 0;
   padding: 8px 12px;
-  background: linear-gradient(135deg, var(--gold) 0%, #d4a82f 100%);
+  background: linear-gradient(135deg, var(--gold) 0%, var(--gold-deep) 100%);
   color: #0a0e16;
+  box-shadow: 0 2px 8px rgba(255, 209, 71, 0.25);
   border-radius: 20px;
   font-weight: 800;
   font-size: 0.9rem;
@@ -287,11 +296,11 @@ h3,
   border: 1px solid var(--live);
   border-radius: 12px;
   padding: 12px 14px;
-  background: linear-gradient(135deg, rgba(255, 71, 87, 0.18), rgba(255, 71, 87, 0.05));
+  background: linear-gradient(135deg, rgba(255, 77, 109, 0.18), rgba(255, 77, 109, 0.05));
   color: var(--text);
   cursor: pointer;
   text-align: left;
-  box-shadow: 0 0 0 3px rgba(255, 71, 87, 0.12);
+  box-shadow: 0 0 0 3px rgba(255, 77, 109, 0.12);
   animation: pulse 2.4s infinite;
 }
 
@@ -305,7 +314,7 @@ h3,
   border-radius: 50%;
   background: var(--live);
   flex-shrink: 0;
-  box-shadow: 0 0 0 4px rgba(255, 71, 87, 0.25);
+  box-shadow: 0 0 0 4px rgba(255, 77, 109, 0.25);
   animation: pulse 1s infinite;
 }
 
@@ -356,7 +365,7 @@ h3,
   padding: 14px;
   border: 1px dashed var(--gold);
   border-radius: 14px;
-  background: rgba(245, 197, 66, 0.08);
+  background: rgba(255, 209, 71, 0.08);
 }
 
 .bracket-tease-icon {
@@ -505,17 +514,18 @@ h3,
   margin: 8px 0;
   padding: 12px 14px;
   border-radius: 12px;
-  transition: all 0.2s ease;
+  transition: transform 0.18s ease, border-color 0.18s ease, box-shadow 0.18s ease;
 }
 
 .card:hover {
-  border-color: var(--border);
-  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
+  border-color: var(--gold);
+  transform: translateY(-1px);
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.25);
 }
 
 .card.live {
   border-color: var(--live);
-  box-shadow: 0 0 0 1px rgba(255, 71, 87, 0.25);
+  box-shadow: 0 0 0 1px rgba(255, 77, 109, 0.25);
 }
 
 .card.done {
@@ -527,7 +537,7 @@ h3,
 }
 
 .card.has-score {
-  border-color: rgba(245, 197, 66, 0.35);
+  border-color: rgba(255, 209, 71, 0.35);
 }
 
 .score-row {
@@ -730,7 +740,7 @@ h3,
 .fav-star.on {
   color: var(--gold);
   border-color: var(--gold);
-  background: rgba(245, 197, 66, 0.15);
+  background: rgba(255, 209, 71, 0.15);
 }
 
 .team-cell {
@@ -1153,7 +1163,7 @@ h3,
 
 .bet-card.won {
   border-color: var(--ok);
-  background: rgba(110, 231, 160, 0.1);
+  background: rgba(52, 211, 153, 0.1);
 }
 
 .bet-card.lost {
@@ -1251,7 +1261,7 @@ h3,
 
 .betting-option.selected {
   border-color: var(--gold);
-  background: rgba(245, 197, 66, 0.15);
+  background: rgba(255, 209, 71, 0.15);
   color: var(--gold);
 }
 
@@ -1376,7 +1386,7 @@ h3,
   padding: 12px;
   border: 1px dashed var(--border);
   border-radius: 12px;
-  background: rgba(245, 197, 66, 0.08);
+  background: rgba(255, 209, 71, 0.08);
   margin-bottom: 12px;
 }
 
@@ -1509,7 +1519,7 @@ h3,
 
 .bracket-team.picked {
   border-color: var(--gold);
-  background: rgba(245, 197, 66, 0.16);
+  background: rgba(255, 209, 71, 0.16);
   color: var(--gold);
 }
 
@@ -1836,7 +1846,7 @@ body.modal-open {
 }
 
 .welcome-tip {
-  background: rgba(245, 197, 66, 0.1);
+  background: rgba(255, 209, 71, 0.1);
   border: 1px dashed var(--gold);
   border-radius: 10px;
   padding: 10px 12px;
@@ -1899,17 +1909,17 @@ body.modal-open {
 
 .toast.success {
   border-color: var(--ok);
-  background: rgba(110, 231, 160, 0.1);
+  background: rgba(52, 211, 153, 0.1);
 }
 
 .toast.error {
   border-color: var(--live);
-  background: rgba(255, 71, 87, 0.1);
+  background: rgba(255, 77, 109, 0.1);
 }
 
 .toast.info {
   border-color: var(--gold);
-  background: rgba(245, 197, 66, 0.1);
+  background: rgba(255, 209, 71, 0.1);
 }
 
 .toast-icon {
