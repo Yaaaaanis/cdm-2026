@@ -59,29 +59,35 @@ function mergeStandings(remoteStandings) {
 
 function parseRemoteData(remote) {
   if (!remote || typeof remote !== "object") {
-    return { standings: defaultStandings(), scores: defaultScores() };
+    return { standings: defaultStandings(), scores: defaultScores(), oddsOverrides: {}, bettingMaintenance: false };
   }
   if (isLegacyStandingsOnly(remote)) {
-    return { standings: mergeStandings(remote), scores: defaultScores() };
+    return { standings: mergeStandings(remote), scores: defaultScores(), oddsOverrides: {}, bettingMaintenance: false };
   }
   return {
     standings: mergeStandings(remote.standings),
     scores:
       remote.scores && typeof remote.scores === "object"
         ? { ...remote.scores }
-        : defaultScores()
+        : defaultScores(),
+    oddsOverrides:
+      remote.oddsOverrides && typeof remote.oddsOverrides === "object"
+        ? { ...remote.oddsOverrides }
+        : {},
+    bettingMaintenance: !!remote.bettingMaintenance
   };
 }
 
 function packRemoteData() {
-  return { standings, scores };
+  return { standings, scores, oddsOverrides, bettingMaintenance };
 }
 
 async function fetchRemoteData() {
   const id = window.CDM_CONFIG.jsonBinId;
-  const res = await fetch(`https://api.jsonbin.io/v3/b/${id}/latest`, {
-    headers: { "X-Bin-Meta": "false" }
-  });
+  const headers = { "X-Bin-Meta": "false" };
+  const readKey = window.CDM_CONFIG.jsonBinReadKey;
+  if (readKey) headers["X-Access-Key"] = readKey;
+  const res = await fetch(`https://api.jsonbin.io/v3/b/${id}/latest`, { headers });
   if (!res.ok) throw new Error("fetch");
   const data = await res.json();
   return data.record || data;
@@ -110,9 +116,9 @@ function loadDataLocal() {
   } catch (_) {}
   try {
     const legacy = localStorage.getItem("cdm2026_standings");
-    if (legacy) return { standings: mergeStandings(JSON.parse(legacy)), scores: defaultScores() };
+    if (legacy) return { standings: mergeStandings(JSON.parse(legacy)), scores: defaultScores(), oddsOverrides: {}, bettingMaintenance: false };
   } catch (_) {}
-  return { standings: defaultStandings(), scores: defaultScores() };
+  return { standings: defaultStandings(), scores: defaultScores(), oddsOverrides: {}, bettingMaintenance: false };
 }
 
 function saveDataLocal() {
@@ -124,6 +130,8 @@ async function initStandingsSync() {
     const local = loadDataLocal();
     standings = local.standings;
     scores = local.scores;
+    oddsOverrides = local.oddsOverrides || {};
+    bettingMaintenance = !!local.bettingMaintenance;
     return { mode: "local" };
   }
 
@@ -132,12 +140,16 @@ async function initStandingsSync() {
     const parsed = parseRemoteData(remote);
     standings = parsed.standings;
     scores = parsed.scores;
+    oddsOverrides = parsed.oddsOverrides || {};
+    bettingMaintenance = !!parsed.bettingMaintenance;
     saveDataLocal();
     return { mode: "cloud" };
   } catch (_) {
     const local = loadDataLocal();
     standings = local.standings;
     scores = local.scores;
+    oddsOverrides = local.oddsOverrides || {};
+    bettingMaintenance = !!local.bettingMaintenance;
     return { mode: "offline" };
   }
 }
@@ -198,9 +210,13 @@ async function refreshStandingsFromCloud() {
     const parsed = parseRemoteData(await fetchRemoteData());
     standings = parsed.standings;
     scores = parsed.scores;
+    oddsOverrides = parsed.oddsOverrides || {};
+    bettingMaintenance = !!parsed.bettingMaintenance;
     saveDataLocal();
+    if (typeof resolveDueBets === "function") resolveDueBets();
     render();
     renderGroups();
+    if (typeof renderBettingPage === "function") renderBettingPage();
   } catch (_) {
     /* garde les données locales */
   }

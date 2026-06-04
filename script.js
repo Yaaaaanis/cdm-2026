@@ -95,8 +95,28 @@ const GROUPS = {
   L: ["Angleterre", "Croatie", "Ghana", "Panama"]
 };
 
-const OPENING = new Date("2026-06-11T21:00:00");
+let OPENING = new Date("2026-06-11T21:00:00");
 const FINAL = new Date("2026-07-19T21:00:00");
+
+// DEV : ?soon=N avance le 1er match à N minutes (défaut 2) à partir de maintenant.
+// Sert à tester en local le passage « à venir → en cours », la home et les paris.
+// Sans le paramètre dans l'URL, rien ne change (sûr à déployer).
+function applyDevSoon() {
+  const params = new URLSearchParams(window.location.search);
+  if (!params.has("soon")) return;
+  const mins = parseInt(params.get("soon"), 10);
+  const delay = Number.isFinite(mins) && mins >= 0 ? mins : 2;
+  const start = new Date(Date.now() + delay * 60000);
+  const pad = (n) => String(n).padStart(2, "0");
+  const dateStr = `${start.getFullYear()}-${pad(start.getMonth() + 1)}-${pad(start.getDate())}`;
+  const timeStr = `${pad(start.getHours())}:${pad(start.getMinutes())}`;
+  if (matches[0]) {
+    matches[0].date = dateStr;
+    matches[0].t = timeStr;
+    OPENING = new Date(`${dateStr}T${timeStr}:00`);
+    console.log(`[DEV] 1er match (${matches[0].h} vs ${matches[0].a}) avancé à ${dateStr} ${timeStr}`);
+  }
+}
 const FAV_KEY = "cdm_favorites";
 const THEME_KEY = "cdm_theme";
 const BRACKET_KEY = "cdm_bracket_predictions";
@@ -117,9 +137,117 @@ const BRACKET_PAIRS = {
   final: [[0, 1]]
 };
 
+function getAnyMatch(id) {
+  return matches.find((m) => m.id === id) || null;
+}
+
+/* ===== Mode test sur de VRAIS matchs =====
+ * En mode test, l'admin peut "marquer" n'importe quel match du calendrier comme
+ * match de test. Il saisit alors un score fictif (+ buteurs) qui sert UNIQUEMENT
+ * à résoudre les paris instantanément. Ces données restent dans la session
+ * (sessionStorage) : elles ne touchent JAMAIS les vrais scores / classements
+ * synchronisés via JSONBin.
+ */
+const TEST_MATCH_IDS_KEY = "cdm_test_match_ids";
+const TEST_SCORES_KEY = "cdm_test_scores";
+
+function getTestMatchIds() {
+  try {
+    return new Set(JSON.parse(sessionStorage.getItem(TEST_MATCH_IDS_KEY)) || []);
+  } catch (_) {
+    return new Set();
+  }
+}
+
+function isTestFlagged(m) {
+  return !!(window.Players && window.Players.isTestMode() && getTestMatchIds().has(m.id));
+}
+
+function toggleTestMatch(id) {
+  const set = getTestMatchIds();
+  if (set.has(id)) {
+    set.delete(id);
+    const o = getTestScores();
+    delete o[id];
+    saveTestScores(o);
+  } else {
+    set.add(id);
+  }
+  sessionStorage.setItem(TEST_MATCH_IDS_KEY, JSON.stringify([...set]));
+}
+
+function getTestScores() {
+  try {
+    return JSON.parse(sessionStorage.getItem(TEST_SCORES_KEY)) || {};
+  } catch (_) {
+    return {};
+  }
+}
+
+function saveTestScores(o) {
+  sessionStorage.setItem(TEST_SCORES_KEY, JSON.stringify(o));
+}
+
+function getTestScore(m) {
+  const s = getTestScores()[m.id];
+  if (!s || s.h === undefined || s.a === undefined) return null;
+  return { h: Number(s.h), a: Number(s.a) };
+}
+
+function getTestScorers(m) {
+  const s = getTestScores()[m.id];
+  return Array.isArray(s && s.scorers) ? s.scorers : [];
+}
+
+// Contexte de résolution d'un match : score de test si le match est en test,
+// sinon le vrai score officiel.
+function betContext(m) {
+  if (isTestFlagged(m)) {
+    return { score: getTestScore(m), scorers: getTestScorers(m), isTest: true };
+  }
+  return { score: getScore(m), scorers: getScorers(m), isTest: false };
+}
+
 let standings = defaultStandings();
 let scores = defaultScores();
+let oddsOverrides = {}; // cotes forcées par l'admin, synchronisées : { matchId: { "market|sel": cote } }
+let oddsEditMatches = new Set(); // cartes en cours d'édition de cotes (transitoire, non synchronisé)
+let bettingMaintenance = false; // si true, les paris sont masqués pour tout le monde sauf l'admin (synchronisé)
 let syncMode = "local";
+
+// Lecture d'une cote forcée par l'admin (utilisée par odds.js).
+window.CDM_getOddsOverride = function (matchId, market, sel) {
+  const o = oddsOverrides[matchId];
+  return o ? o[`${market}|${sel}`] : undefined;
+};
+
+// Définit/efface une cote forcée puis synchronise (value null/NaN => retour auto).
+function setOddsOverride(matchId, market, sel, value) {
+  const key = `${market}|${sel}`;
+  if (value == null || Number.isNaN(value) || value <= 1) {
+    if (oddsOverrides[matchId]) {
+      delete oddsOverrides[matchId][key];
+      if (!Object.keys(oddsOverrides[matchId]).length) delete oddsOverrides[matchId];
+    }
+  } else {
+    if (!oddsOverrides[matchId]) oddsOverrides[matchId] = {};
+    oddsOverrides[matchId][key] = Math.round(value * 100) / 100;
+  }
+  persistData();
+}
+
+function setBettingMaintenance(on) {
+  bettingMaintenance = !!on;
+  persistData();
+  renderBettingPage();
+  showToast(
+    "info",
+    bettingMaintenance ? "Paris en maintenance" : "Paris ouverts",
+    bettingMaintenance
+      ? "Les paris sont maintenant cachés pour les autres joueurs."
+      : "Les paris sont de nouveau visibles par tout le monde."
+  );
+}
 let knockoutFilter = "all";
 let bracket = loadBracket();
 let matchRefreshTimer = null;
@@ -128,6 +256,26 @@ function getScore(m) {
   const s = scores[m.id];
   if (!s || s.h === undefined || s.a === undefined) return null;
   return { h: Number(s.h), a: Number(s.a) };
+}
+
+// Liste des buteurs saisie par l'admin (pour résoudre les paris "buteur").
+function getScorers(m) {
+  const s = scores[m.id];
+  return Array.isArray(s && s.scorers) ? s.scorers : [];
+}
+
+function setScorers(m, names) {
+  const s = scores[m.id];
+  if (!s) return;
+  scores[m.id] = { ...s, scorers: Array.from(new Set(names)) };
+  persistData();
+  const win = settleMatchBets(m, { score: getScore(m), scorers: getScorers(m) });
+  renderBettingPage();
+  if (win > 0) showToast("success", "Paris buteur gagnés", `+${win} 💰 ajoutés au solde.`);
+}
+
+function isBigMatch(m) {
+  return !!(window.Odds && window.Odds.isBigMatch(m));
 }
 
 function hasScore(m) {
@@ -169,14 +317,82 @@ function saveMatchScore(m, h, a) {
       showToast("error", "Erreur", "Score invalide.");
       return;
     }
+    const prev = scores[m.id];
     scores[m.id] = { h: hi, a: ai };
-    // Résoudre les paris pour ce match
-    if (window.Betting) resolveBetsForMatch(m, hi, ai);
+    // Conserve les buteurs déjà saisis pour ce match.
+    if (prev && Array.isArray(prev.scorers)) scores[m.id].scorers = prev.scorers;
   }
   recalcStandingsFromScores();
   persistData();
+  // Résoudre les paris pour ce match (score authoritatif saisi par l'admin).
+  const winnings = h === "" && a === "" ? 0 : settleMatchBets(m, { score: getScore(m), scorers: getScorers(m) });
   render();
   renderGroups();
+  if (window.Betting) window.Betting.renderWalletBalance();
+  renderBettingPage();
+  if (winnings > 0) {
+    setTimeout(() => showToast("success", "Paris gagnés", `+${winnings} 💰 ajoutés au solde.`), 150);
+  }
+}
+
+// Résout, pour un match donné, tous les paris en attente à partir du score
+// et des buteurs saisis. Les paris "buteur" non tranchables (buteurs pas
+// encore saisis alors qu'il y a eu des buts) restent en attente.
+function settleMatchBets(m, ctx) {
+  if (!window.Betting || !window.Betting.resolveBetWith) return 0;
+  if (!ctx) ctx = betContext(m);
+  if (!ctx.score) return 0;
+  const pending = window.Betting.getPendingBets().filter((b) => b.matchId === m.id);
+  if (!pending.length) return 0;
+
+  let changed = false;
+  let winnings = 0;
+  pending.forEach((bet) => {
+    const r = window.Betting.resolveBetWith(bet.id, ctx.score, ctx.scorers);
+    if (r.success) {
+      changed = true;
+      if (r.won) winnings += r.amount;
+    }
+  });
+  if (changed) {
+    window.Betting.renderWalletBalance();
+    syncAfterBetChange();
+  }
+  return winnings;
+}
+
+// Saisie d'un score de test sur un vrai match (mode test). Ne touche pas aux
+// vrais scores ni au classement réel : résout les paris immédiatement.
+function saveTestScore(m, h, a) {
+  const o = getTestScores();
+  if (h === "" && a === "") {
+    delete o[m.id];
+    saveTestScores(o);
+    renderBettingPage();
+    showToast("info", "Score test effacé", "Le match repart à zéro.");
+    return;
+  }
+  const hi = parseInt(h, 10);
+  const ai = parseInt(a, 10);
+  if (Number.isNaN(hi) || Number.isNaN(ai) || hi < 0 || ai < 0) {
+    showToast("error", "Erreur", "Score invalide.");
+    return;
+  }
+  o[m.id] = { ...(o[m.id] || {}), h: hi, a: ai };
+  saveTestScores(o);
+  const win = settleMatchBets(m, { score: { h: hi, a: ai }, scorers: getTestScorers(m) });
+  renderBettingPage();
+  showToast("success", "Score test enregistré", win > 0 ? `+${win} 💰 de gains résolus.` : "Paris résolus.");
+}
+
+function setTestScorers(m, names) {
+  const o = getTestScores();
+  if (!o[m.id]) return;
+  o[m.id] = { ...o[m.id], scorers: Array.from(new Set(names)) };
+  saveTestScores(o);
+  const win = settleMatchBets(m, { score: getTestScore(m), scorers: o[m.id].scorers });
+  renderBettingPage();
+  if (win > 0) showToast("success", "Paris buteur gagnés", `+${win} 💰 ajoutés au solde.`);
 }
 
 function clearMatchScore(m) {
@@ -203,6 +419,7 @@ function scoreBlockHtml(m) {
         <button type="button" class="score-save">OK</button>
         ${s ? '<button type="button" class="score-clear" title="Effacer">✕</button>' : ""}
       </div>
+      ${scorersEditorHtml(m)}
     `;
   }
 
@@ -219,7 +436,53 @@ function scoreBlockHtml(m) {
   return "";
 }
 
+// Éditeur de buteurs : visible en mode admin, sur les matchs d'une grosse
+// équipe, une fois le score saisi. Sert à résoudre les paris "buteur".
+function scorersEditorHtml(m, test = false) {
+  if (!isBigMatch(m) || typeof SQUADS === "undefined") return "";
+  const score = test ? getTestScore(m) : getScore(m);
+  if (!score) return "";
+  const selected = new Set(test ? getTestScorers(m) : getScorers(m));
+  const teamBlock = (team) => {
+    if (!SQUADS[team]) return "";
+    const chips = Object.values(SQUADS[team].groups)
+      .flat()
+      .map(
+        (p) =>
+          `<button type="button" class="scorer-chip${selected.has(p.name) ? " on" : ""}" data-scorer="${escapeHtml(p.name)}">${escapeHtml(p.name)}</button>`
+      )
+      .join("");
+    return `<div class="scorers-team"><div class="scorers-team-name">${teamLabel(team)}</div><div class="scorer-chips">${chips}</div></div>`;
+  };
+  const saveClass = test ? "test-scorers-save" : "scorers-save";
+  return `
+    <div class="scorers-editor">
+      <button type="button" class="scorers-toggle">⚽ Buteurs (${selected.size}) ▾</button>
+      <div class="scorers-panel hidden">
+        <p class="section-hint">Coche les joueurs qui ont marqué puis enregistre — nécessaire pour résoudre les paris « buteur ».</p>
+        ${teamBlock(m.h)}
+        ${teamBlock(m.a)}
+        <button type="button" class="admin-btn ${saveClass}">Enregistrer les buteurs</button>
+      </div>
+    </div>
+  `;
+}
+
 function bindScoreControls(card, m) {
+  const toggle = card.querySelector(".scorers-toggle");
+  if (toggle) {
+    const panel = card.querySelector(".scorers-panel");
+    toggle.addEventListener("click", () => panel?.classList.toggle("hidden"));
+    card.querySelectorAll(".scorer-chip").forEach((chip) => {
+      chip.addEventListener("click", () => chip.classList.toggle("on"));
+    });
+    card.querySelector(".scorers-save")?.addEventListener("click", () => {
+      const names = [...card.querySelectorAll(".scorer-chip.on")].map((c) => c.dataset.scorer);
+      setScorers(m, names);
+      showToast("success", "Buteurs enregistrés", names.length ? names.join(", ") : "Aucun buteur retenu.");
+    });
+  }
+
   const saveBtn = card.querySelector(".score-save");
   if (!saveBtn) return;
 
@@ -241,32 +504,6 @@ function bindScoreControls(card, m) {
   });
 }
 
-function createBettingInterface(m) {
-  const odds = window.Betting.calculateOdds(m);
-  return `
-    <div class="betting-section" data-match-id="${m.id}">
-      <div class="betting-options">
-        <button class="betting-option" data-bet-type="home">
-          ${teamLabel(m.h)}
-          <span class="betting-odds">${odds.home.toFixed(2)}</span>
-        </button>
-        <button class="betting-option" data-bet-type="draw">
-          Nul
-          <span class="betting-odds">${odds.draw.toFixed(2)}</span>
-        </button>
-        <button class="betting-option" data-bet-type="away">
-          ${teamLabel(m.a)}
-          <span class="betting-odds">${odds.away.toFixed(2)}</span>
-        </button>
-      </div>
-      <div class="betting-input-row">
-        <input type="number" class="betting-input" placeholder="Montant (💰)" min="1" max="${window.Betting.getBalance()}">
-        <button class="betting-btn" disabled>Parier</button>
-      </div>
-    </div>
-  `;
-}
-
 function bindBettingControls(card, m) {
   const section = card.querySelector(".betting-section");
   if (!section) return;
@@ -275,20 +512,29 @@ function bindBettingControls(card, m) {
   const quickAmounts = section.querySelectorAll(".quick-amount");
   const input = section.querySelector(".betting-input");
   const btn = section.querySelector(".betting-btn");
-  let selectedType = null;
-  let selectedOdds = null;
+  const info = section.querySelector(".betting-selection-info");
+  if (!input || !btn) return; // mode édition des cotes : pas de zone de mise
+  let sel = null;
 
-  options.forEach(opt => {
+  options.forEach((opt) => {
     opt.addEventListener("click", () => {
-      options.forEach(o => o.classList.remove("selected"));
+      options.forEach((o) => o.classList.remove("selected"));
       opt.classList.add("selected");
-      selectedType = opt.dataset.betType;
-      selectedOdds = parseFloat(opt.querySelector(".betting-odds").textContent);
+      sel = {
+        market: opt.dataset.market,
+        selection: opt.dataset.selection,
+        odds: parseFloat(opt.dataset.odds),
+        label: opt.dataset.label
+      };
+      if (info) {
+        info.hidden = false;
+        info.innerHTML = `Sélection : <strong>${escapeHtml(sel.label)}</strong> · cote ${sel.odds.toFixed(2)}`;
+      }
       updateBetButton();
     });
   });
 
-  quickAmounts.forEach(qa => {
+  quickAmounts.forEach((qa) => {
     qa.addEventListener("click", () => {
       const amount = parseInt(qa.dataset.amount, 10);
       if (amount <= window.Betting.getBalance()) {
@@ -304,9 +550,9 @@ function bindBettingControls(card, m) {
 
   function updateBetButton() {
     const amount = parseInt(input.value, 10);
-    if (selectedType && amount > 0 && amount <= window.Betting.getBalance()) {
+    if (sel && amount > 0 && amount <= window.Betting.getBalance()) {
       btn.disabled = false;
-      btn.textContent = `Parier ${amount} 💰`;
+      btn.textContent = `Parier ${amount} 💰 · gain ${Math.floor(amount * sel.odds)} 💰`;
     } else {
       btn.disabled = true;
       btn.textContent = "Parier";
@@ -314,53 +560,156 @@ function bindBettingControls(card, m) {
   }
 
   btn.addEventListener("click", () => {
+    if (!isTestFlagged(m) && getMatchStatus(m).key !== "upcoming") {
+      showToast("error", "Trop tard", "Les paris sont fermés : le match a commencé.");
+      renderBettingPage();
+      return;
+    }
+    if (!sel) return;
     const amount = parseInt(input.value, 10);
-    const result = window.Betting.createBet(m.id, selectedType, amount, selectedOdds);
+    const result = window.Betting.createBet(m.id, sel.market, sel.selection, sel.label, amount, sel.odds);
     if (result.success) {
-      showToast("success", "Pari placé !", `Gain potentiel : ${result.bet.potentialWin} 💰`);
-      input.value = "";
-      options.forEach(o => o.classList.remove("selected"));
-      selectedType = null;
-      selectedOdds = null;
-      btn.disabled = true;
-      btn.textContent = "Parier";
+      showToast("success", "Pari placé !", `${sel.label} — gain potentiel ${result.bet.potentialWin} 💰`);
       window.Betting.renderWalletBalance();
+      syncAfterBetChange();
+      renderBettingPage();
     } else {
       showToast("error", "Erreur", result.error);
     }
   });
 }
 
-function resolveBetsForMatch(m, homeScore, awayScore) {
-  const pendingBets = window.Betting.getPendingBets().filter(b => b.matchId === m.id);
-  if (pendingBets.length === 0) return;
+// Résout, sur CHAQUE appareil, les paris dont le match a un résultat officiel.
+// Les vrais matchs ne sont résolus qu'une fois terminés ; les matchs de test
+// dès qu'un score est saisi par l'admin. Les paris "buteur" attendent la
+// saisie des buteurs (sauf 0-0 où personne n'a marqué).
+function resolveDueBets() {
+  if (!window.Betting || !window.Betting.resolveBetWith) return;
+  const pending = window.Betting.getPendingBets();
+  if (!pending.length) return;
 
-  let matchResult;
-  if (homeScore > awayScore) {
-    matchResult = 'home';
-  } else if (homeScore < awayScore) {
-    matchResult = 'away';
-  } else {
-    matchResult = 'draw';
-  }
+  let changed = false;
+  let winnings = 0;
 
-  let totalWinnings = 0;
-  pendingBets.forEach(bet => {
-    const result = window.Betting.resolveBet(bet.id, matchResult);
-    if (result.success && result.won) {
-      totalWinnings += result.amount;
+  pending.forEach((bet) => {
+    const m = getAnyMatch(bet.matchId);
+    if (!m) return;
+    const ctx = betContext(m);
+    if (!ctx.score) return;
+    // Match réel : on attend qu'il soit terminé. Match en test : résolution immédiate.
+    if (!ctx.isTest && getMatchStatus(m).key !== "done") return;
+    const r = window.Betting.resolveBetWith(bet.id, ctx.score, ctx.scorers);
+    if (r.success) {
+      changed = true;
+      if (r.won) winnings += r.amount;
     }
   });
 
-  if (totalWinnings > 0) {
-    setTimeout(() => showToast("success", "Félicitations !", `Vous avez gagné ${totalWinnings} 💰 sur ce match !`), 200);
+  if (changed) {
+    window.Betting.renderWalletBalance();
+    syncAfterBetChange();
+    if (winnings > 0) {
+      showToast("success", "Paris gagnés", `+${winnings} 💰 ajoutés à ton solde.`);
+    }
   }
 }
 
+// Pousse les stats à jour puis re-télécharge le classement (dans l'ordre).
+async function syncAfterBetChange() {
+  if (!window.Players) return;
+  await window.Players.pushStats();
+  renderLeaderboard();
+}
+
+function escapeHtml(str) {
+  return String(str ?? "").replace(/[&<>"']/g, (c) => ({
+    "&": "&amp;",
+    "<": "&lt;",
+    ">": "&gt;",
+    '"': "&quot;",
+    "'": "&#39;"
+  }[c]));
+}
+
+function bettingOddsBtn(market, s) {
+  return `
+    <button type="button" class="betting-option${s.custom ? " custom" : ""}" data-market="${market}" data-selection="${escapeHtml(s.sel)}" data-label="${escapeHtml(s.label)}" data-odds="${s.odds}">
+      <span class="bo-label">${escapeHtml(s.short)}</span>
+      <span class="betting-odds">${s.odds.toFixed(2)}</span>
+    </button>`;
+}
+
+function marketBoardHtml(m) {
+  if (!window.Odds) return "";
+  return window.Odds.getMarketBoard(m)
+    .map(
+      (mk) => `
+      <div class="market-block">
+        <div class="market-title">${escapeHtml(mk.title)}</div>
+        <div class="market-options${mk.layout === "row" ? " scroll" : ""}">
+          ${mk.selections.map((s) => bettingOddsBtn(mk.key, s)).join("")}
+        </div>
+      </div>`
+    )
+    .join("");
+}
+
+// Rendu d'édition des cotes (mode admin) : chaque sélection devient un champ
+// éditable. Remplacer la valeur + Entrée force la cote ; vider = retour auto.
+function editableBoardHtml(m) {
+  if (!window.Odds) return "";
+  return window.Odds.getMarketBoard(m)
+    .map(
+      (mk) => `
+      <div class="market-block">
+        <div class="market-title">${escapeHtml(mk.title)}</div>
+        <div class="odds-edit-list">
+          ${mk.selections
+            .map(
+              (s) => `
+            <label class="odds-edit-row${s.custom ? " custom" : ""}">
+              <span class="oe-label">${escapeHtml(s.short)}</span>
+              <input type="number" step="0.01" min="1.01" class="odds-edit-in" data-market="${mk.key}" data-sel="${escapeHtml(s.sel)}" value="${s.odds.toFixed(2)}">
+            </label>`
+            )
+            .join("")}
+        </div>
+      </div>`
+    )
+    .join("");
+}
+
 function createBettingMatchCard(m) {
-  const odds = window.Betting.calculateOdds(m);
+  const big = isBigMatch(m);
+  const admin = canEditStandings();
+  const editing = admin && oddsEditMatches.has(m.id);
   const card = document.createElement("div");
-  card.className = "card betting-match-card";
+  card.className = "card betting-match-card" + (big ? " big-match" : "") + (editing ? " editing-odds" : "");
+
+  const hasOverrides = !!(oddsOverrides[m.id] && Object.keys(oddsOverrides[m.id]).length);
+  const editHead = admin
+    ? `<div class="market-board-head">
+        ${editing ? '<span class="oe-hint">Remplace une cote puis Entrée · champ vide = auto</span>' : ""}
+        <button type="button" class="odds-edit-toggle">${editing ? "✓ Terminer" : "✏️ Modifier les cotes"}</button>
+        <button type="button" class="odds-reset-btn"${hasOverrides ? "" : " disabled"} title="Remettre toutes les cotes de ce match en auto">↺ Réinitialiser</button>
+      </div>`
+    : "";
+
+  const betSection = editing
+    ? `<div class="market-board editable">${editableBoardHtml(m)}</div>`
+    : `<div class="market-board">${marketBoardHtml(m)}</div>
+      <div class="quick-bet-amounts">
+        <button class="quick-amount" data-amount="10">10 💰</button>
+        <button class="quick-amount" data-amount="25">25 💰</button>
+        <button class="quick-amount" data-amount="50">50 💰</button>
+        <button class="quick-amount" data-amount="100">100 💰</button>
+      </div>
+      <div class="betting-selection-info" hidden></div>
+      <div class="betting-input-row">
+        <input type="number" class="betting-input" placeholder="Montant (💰)" min="1" max="${window.Betting.getBalance()}">
+        <button class="betting-btn" disabled>Parier</button>
+      </div>`;
+
   card.innerHTML = `
     <div class="row">
       <div class="teams">
@@ -369,35 +718,15 @@ function createBettingMatchCard(m) {
         <span class="team-line">${teamLabel(m.a)}</span>
       </div>
       <div class="time-col">
+        ${big ? '<span class="big-badge">+ de paris</span>' : ""}
         <span class="time">${m.t}</span>
       </div>
     </div>
     <div class="betting-section" data-match-id="${m.id}">
-      <div class="betting-options">
-        <button class="betting-option" data-bet-type="home">
-          ${teamLabel(m.h)}
-          <span class="betting-odds">${odds.home.toFixed(2)}</span>
-        </button>
-        <button class="betting-option" data-bet-type="draw">
-          Nul
-          <span class="betting-odds">${odds.draw.toFixed(2)}</span>
-        </button>
-        <button class="betting-option" data-bet-type="away">
-          ${teamLabel(m.a)}
-          <span class="betting-odds">${odds.away.toFixed(2)}</span>
-        </button>
-      </div>
-      <div class="quick-bet-amounts">
-        <button class="quick-amount" data-amount="10">10 💰</button>
-        <button class="quick-amount" data-amount="25">25 💰</button>
-        <button class="quick-amount" data-amount="50">50 💰</button>
-        <button class="quick-amount" data-amount="100">100 💰</button>
-      </div>
-      <div class="betting-input-row">
-        <input type="number" class="betting-input" placeholder="Montant (💰)" min="1" max="${window.Betting.getBalance()}">
-        <button class="betting-btn" disabled>Parier</button>
-      </div>
+      ${editHead}
+      ${betSection}
     </div>
+    ${testControlsHtml(m)}
     <div class="meta">
       <span class="date">📅 ${getDateLabel(m)}</span>
       ${m.g ? `<span class="badge">Groupe ${m.g}</span>` : ""}
@@ -405,7 +734,115 @@ function createBettingMatchCard(m) {
     </div>
   `;
   bindBettingControls(card, m);
+  bindTestMatchControls(card, m);
+  bindOddsEditControls(card, m);
   return card;
+}
+
+function bindOddsEditControls(card, m) {
+  card.querySelector(".odds-edit-toggle")?.addEventListener("click", () => {
+    if (oddsEditMatches.has(m.id)) oddsEditMatches.delete(m.id);
+    else oddsEditMatches.add(m.id);
+    renderBettingPage();
+  });
+
+  card.querySelector(".odds-reset-btn")?.addEventListener("click", () => {
+    if (!oddsOverrides[m.id] || !Object.keys(oddsOverrides[m.id]).length) {
+      showToast("info", "Rien à réinitialiser", "Ce match utilise déjà les cotes auto.");
+      return;
+    }
+    if (!window.confirm(`Remettre toutes les cotes de ${m.h} vs ${m.a} en automatique ?`)) return;
+    delete oddsOverrides[m.id];
+    persistData();
+    renderBettingPage();
+    showToast("success", "Cotes réinitialisées", "Le match repasse sur les cotes auto.");
+  });
+
+  card.querySelectorAll(".odds-edit-in").forEach((inp) => {
+    const commit = () => {
+      const raw = inp.value.trim();
+      const v = parseFloat(raw);
+      const isAuto = raw === "" || Number.isNaN(v) || v <= 1;
+      setOddsOverride(m.id, inp.dataset.market, inp.dataset.sel, isAuto ? null : v);
+      const row = inp.closest(".odds-edit-row");
+      if (isAuto) {
+        row?.classList.remove("custom");
+      } else {
+        row?.classList.add("custom");
+        inp.value = (Math.round(v * 100) / 100).toFixed(2);
+      }
+    };
+    inp.addEventListener("keydown", (e) => {
+      if (e.key === "Enter") {
+        e.preventDefault();
+        commit();
+        inp.blur();
+      }
+    });
+    inp.addEventListener("change", commit);
+  });
+}
+
+// Contrôles de test affichés sur les cartes de paris quand le mode test est actif.
+function testControlsHtml(m) {
+  if (!(window.Players && window.Players.isTestMode())) return "";
+  const flagged = getTestMatchIds().has(m.id);
+  const admin = canEditStandings();
+  let html = `<div class="test-controls">
+    <button type="button" class="test-flag-btn${flagged ? " on" : ""}">${flagged ? "🧪 En test — clique pour retirer" : "🧪 Tester ce match"}</button>`;
+  if (flagged && admin) {
+    const s = getTestScore(m);
+    html += `
+      <div class="score-row score-admin test-score-row">
+        <label class="score-label">Score test</label>
+        <input type="number" min="0" max="15" class="test-score-in" data-side="h" value="${s ? s.h : ""}" placeholder="0" aria-label="Buts ${m.h}">
+        <span class="score-sep">–</span>
+        <input type="number" min="0" max="15" class="test-score-in" data-side="a" value="${s ? s.a : ""}" placeholder="0" aria-label="Buts ${m.a}">
+        <button type="button" class="test-score-save">OK</button>
+        ${s ? '<button type="button" class="test-score-clear" title="Effacer le score test">✕</button>' : ""}
+      </div>
+      ${scorersEditorHtml(m, true)}`;
+  } else if (flagged && !admin) {
+    html += `<p class="section-hint">Connecte-toi en admin (page Poules) pour saisir un score de test.</p>`;
+  }
+  html += "</div>";
+  return html;
+}
+
+function bindTestMatchControls(card, m) {
+  card.querySelector(".test-flag-btn")?.addEventListener("click", () => {
+    toggleTestMatch(m.id);
+    renderBettingPage();
+  });
+
+  const save = card.querySelector(".test-score-save");
+  if (save) {
+    save.addEventListener("click", () => {
+      const h = card.querySelector('.test-score-in[data-side="h"]')?.value ?? "";
+      const a = card.querySelector('.test-score-in[data-side="a"]')?.value ?? "";
+      saveTestScore(m, h, a);
+    });
+    card.querySelectorAll(".test-score-in").forEach((inp) => {
+      inp.addEventListener("keydown", (e) => {
+        if (e.key === "Enter") save.click();
+      });
+    });
+  }
+  card.querySelector(".test-score-clear")?.addEventListener("click", () => saveTestScore(m, "", ""));
+
+  const toggle = card.querySelector(".scorers-toggle");
+  if (toggle) {
+    const panel = card.querySelector(".scorers-panel");
+    toggle.addEventListener("click", () => panel?.classList.toggle("hidden"));
+    card.querySelectorAll(".scorer-chip").forEach((chip) => {
+      chip.addEventListener("click", () => chip.classList.toggle("on"));
+    });
+    card.querySelector(".test-scorers-save")?.addEventListener("click", () => {
+      const names = [...card.querySelectorAll(".scorer-chip.on")].map((c) => c.dataset.scorer);
+      setTestScorers(m, names);
+      showToast("success", "Buteurs test enregistrés", names.length ? names.join(", ") : "Aucun buteur retenu.");
+    });
+  }
 }
 
 function getDateObj(m) {
@@ -448,6 +885,24 @@ function isFavorite(team) {
   return getFavorites().includes(team);
 }
 
+function setFavorites(list) {
+  localStorage.setItem(FAV_KEY, JSON.stringify(Array.isArray(list) ? list : []));
+}
+
+// Données de profil synchronisées entre appareils (solde + paris + favoris).
+window.CDM_collectProfileData = function () {
+  const st = window.Betting && window.Betting.exportState ? window.Betting.exportState() : { wallet: null, bets: [] };
+  return { wallet: st.wallet, bets: st.bets, favorites: getFavorites() };
+};
+
+function applyProfileData(data) {
+  if (!data || typeof data !== "object") return;
+  if (window.Betting && window.Betting.importState) {
+    window.Betting.importState({ wallet: data.wallet, bets: data.bets });
+  }
+  if (Array.isArray(data.favorites)) setFavorites(data.favorites);
+}
+
 function toggleFavorite(team) {
   let list = getFavorites();
   if (list.includes(team)) {
@@ -466,6 +921,8 @@ function toggleFavorite(team) {
   render();
   renderGroups();
   if (window.Betting) window.Betting.renderWalletBalance();
+  // Synchronise les favoris (et le profil) en ligne si l'utilisateur est inscrit.
+  if (window.Players && window.Players.hasJoined()) window.Players.pushStats();
 }
 
 function teamFavButton(team) {
@@ -705,10 +1162,34 @@ function getBracketTeams(roundKey, matchIndex) {
   ];
 }
 
+function groupGoalStats(g) {
+  const stats = {};
+  (GROUPS[g] || []).forEach((t) => {
+    stats[t] = { gf: 0, ga: 0 };
+  });
+  matches.forEach((m) => {
+    if (m.g !== g) return;
+    const s = getScore(m);
+    if (!s || Number.isNaN(s.h) || Number.isNaN(s.a)) return;
+    if (!stats[m.h] || !stats[m.a]) return;
+    stats[m.h].gf += s.h;
+    stats[m.h].ga += s.a;
+    stats[m.a].gf += s.a;
+    stats[m.a].ga += s.h;
+  });
+  return stats;
+}
+
 function rankedGroup(g) {
+  const gs = groupGoalStats(g);
   return [...GROUPS[g]].sort((a, b) => {
     const diff = (standings[g]?.[b] ?? 0) - (standings[g]?.[a] ?? 0);
-    return diff !== 0 ? diff : a.localeCompare(b, "fr");
+    if (diff !== 0) return diff;
+    const gdA = gs[a].gf - gs[a].ga;
+    const gdB = gs[b].gf - gs[b].ga;
+    if (gdB !== gdA) return gdB - gdA;
+    if (gs[b].gf !== gs[a].gf) return gs[b].gf - gs[a].gf;
+    return a.localeCompare(b, "fr");
   });
 }
 
@@ -1062,7 +1543,7 @@ function renderQuickNav() {
     { page: 1, label: "Aujourd'hui", icon: "📅" },
     { page: 5, label: "Favoris", icon: "⭐" },
     { page: 9, label: "Poules", icon: "📊" },
-    { page: 7, label: "Maroc", icon: "��" },
+    { page: 7, label: "Maroc", icon: "🇲🇦" },
     { page: 10, label: "Finale", icon: "🏆" }
   ];
   el.innerHTML = "";
@@ -1181,6 +1662,21 @@ function renderKnockout() {
 }
 
 let bettingFilter = "all";
+let lastBettingSignature = "";
+
+function bettingSignature() {
+  const test = window.Players && window.Players.isTestMode() ? "T:" : "";
+  const ids = matches.filter((m) => getMatchStatus(m).key === "upcoming").map((m) => m.id);
+  return test + ids.join(",");
+}
+
+// Rafraîchit la page Paris uniquement si elle est ouverte ET que la liste des
+// matchs pariables a changé (ex : un match vient de débuter → il disparaît).
+function maybeRefreshBetting() {
+  const page = document.getElementById("bettingMatches")?.closest(".page");
+  if (!page || !page.classList.contains("active")) return;
+  if (bettingSignature() !== lastBettingSignature) renderBettingPage();
+}
 
 function renderBettingPage() {
   if (!window.Betting) return;
@@ -1193,32 +1689,25 @@ function renderBettingPage() {
   const pendingBetsEl = document.getElementById("pendingBets");
   const completedBetsEl = document.getElementById("completedBets");
 
-  // Vérifier si l'utilisateur est admin
-  const isAdmin = canEditStandings();
-
-  if (!isAdmin) {
-    // Mode maintenance pour les non-admin
-    if (balanceEl) balanceEl.parentElement.parentElement.innerHTML = `
-      <div class="wallet-info">
-        <div class="wallet-card" style="grid-column: span 3; text-align: center; padding: 30px;">
-          <span style="font-size: 3rem; margin-bottom: 10px; display: block;">🚧</span>
-          <span class="wallet-label" style="font-size: 1rem; margin-bottom: 5px;">Maintenance</span>
-          <span class="wallet-amount" style="font-size: 1rem;">Bientôt disponible</span>
-        </div>
-      </div>
-    `;
-    if (bettingMatchesEl) bettingMatchesEl.innerHTML = "";
-    if (pendingBetsEl) pendingBetsEl.innerHTML = "";
-    if (completedBetsEl) completedBetsEl.innerHTML = "";
-    return;
-  }
-
   if (balanceEl) balanceEl.textContent = `${window.Betting.getBalance()} 💰`;
   if (winningsEl) winningsEl.textContent = `${window.Betting.getAllBets().reduce((sum, b) => b.status === 'won' ? sum + b.potentialWin : sum, 0)} 💰`;
-  if (pendingCountEl) pendingCountEl.textContent = window.Betting.getPendingBets().length;
+  if (pendingCountEl) {
+    const pendingCount = window.Betting.getPendingBets().length;
+    pendingCountEl.textContent = pendingCount;
+    const cardEl = pendingCountEl.closest(".wallet-card");
+    if (cardEl) {
+      cardEl.classList.toggle("clickable", pendingCount > 0);
+      cardEl.title = pendingCount > 0 ? "Voir mes paris en cours" : "";
+      cardEl.onclick = pendingCount > 0
+        ? () => document.getElementById("pendingBets")?.scrollIntoView({ behavior: "smooth", block: "start" })
+        : null;
+    }
+  }
 
-  // Afficher les filtres
-  if (bettingFiltersEl) {
+  // Afficher les filtres (cachés si paris en maintenance pour un visiteur)
+  if (bettingFiltersEl && bettingMaintenance && !canEditStandings()) {
+    bettingFiltersEl.innerHTML = "";
+  } else if (bettingFiltersEl) {
     bettingFiltersEl.innerHTML = "";
     const filters = ["all", "J1", "J2", "J3"];
     filters.forEach(f => {
@@ -1237,21 +1726,83 @@ function renderBettingPage() {
   // Afficher les matchs disponibles pour les paris
   if (bettingMatchesEl) {
     bettingMatchesEl.innerHTML = "";
-    let upcomingMatches = matches.filter(m => getMatchStatus(m).key === 'upcoming');
-    
-    // Appliquer le filtre
-    if (bettingFilter !== "all") {
-      const day = parseInt(bettingFilter.replace("J", ""), 10);
-      upcomingMatches = upcomingMatches.filter(m => m.d === day);
-    }
-    
-    if (upcomingMatches.length === 0) {
-      bettingMatchesEl.innerHTML = "<p class='empty-msg'>Aucun match à venir disponible pour les paris.</p>";
-    } else {
-      sortMatches(upcomingMatches).forEach(m => {
-        const card = createBettingMatchCard(m);
-        bettingMatchesEl.appendChild(card);
+
+    // Toggle maintenance (admin uniquement) : cache les paris aux autres joueurs.
+    if (canEditStandings()) {
+      const mc = document.createElement("div");
+      mc.className = "maintenance-admin";
+      mc.innerHTML = `
+        <label class="maintenance-toggle">
+          <input type="checkbox" id="maintenanceToggle" ${bettingMaintenance ? "checked" : ""}>
+          <span>🔧 Mettre les paris en maintenance</span>
+        </label>
+        <p class="maintenance-hint">${bettingMaintenance
+          ? "🔒 Cachés pour tout le monde sauf toi (admin)."
+          : "👀 Visibles par tous les joueurs."}</p>
+      `;
+      bettingMatchesEl.appendChild(mc);
+      mc.querySelector("#maintenanceToggle")?.addEventListener("change", (e) => {
+        setBettingMaintenance(e.target.checked);
       });
+    }
+
+    // Maintenance active + visiteur non-admin : on masque les matchs (mais on
+    // garde les paris en cours / historique affichés plus bas).
+    const hideMarkets = bettingMaintenance && !canEditStandings();
+
+    if (hideMarkets) {
+      const msg = document.createElement("div");
+      msg.className = "maintenance-banner";
+      msg.innerHTML = `
+        <div class="maintenance-emoji">🔧</div>
+        <strong>Les paris sont en maintenance</strong>
+        <span>Reviens un peu plus tard, ça arrive très vite !</span>
+      `;
+      bettingMatchesEl.appendChild(msg);
+    } else {
+      // Incitation à rejoindre le classement (visiteurs non inscrits)
+      if (window.Players && window.Players.isLeaderboardConfigured() && !window.Players.hasJoined()) {
+        const nudge = document.createElement("div");
+        nudge.className = "join-nudge";
+        nudge.innerHTML = `
+          <span>🏆 Rejoins le classement pour comparer ton solde avec les autres.</span>
+          <div class="join-card-actions">
+            <button type="button" class="admin-btn" id="bettingJoinBtn">Choisir mon pays →</button>
+            <button type="button" class="link-btn" id="bettingLoginBtn">Déjà un compte ? Se connecter</button>
+          </div>
+        `;
+        nudge.querySelector("#bettingJoinBtn")?.addEventListener("click", openJoinModal);
+        nudge.querySelector("#bettingLoginBtn")?.addEventListener("click", openLoginModal);
+        bettingMatchesEl.appendChild(nudge);
+      }
+
+      // Bannière mode test : explique comment tester un vrai match.
+      if (window.Players && window.Players.isTestMode()) {
+        const flaggedCount = getTestMatchIds().size;
+        const banner = document.createElement("div");
+        banner.className = "test-panel";
+        banner.innerHTML = `<div class="test-panel-head">🧪 Mode test actif — <span>choisis un match ci-dessous et clique « Tester ce match » pour saisir un score fictif et résoudre les paris instantanément (sans toucher aux vrais scores).${flaggedCount ? ` ${flaggedCount} match(s) en test.` : ""}</span></div>`;
+        bettingMatchesEl.appendChild(banner);
+      }
+
+      let upcomingMatches = matches.filter(m => getMatchStatus(m).key === 'upcoming');
+
+      // Appliquer le filtre
+      if (bettingFilter !== "all") {
+        const day = parseInt(bettingFilter.replace("J", ""), 10);
+        upcomingMatches = upcomingMatches.filter(m => m.d === day);
+      }
+
+      if (upcomingMatches.length === 0) {
+        const none = document.createElement("p");
+        none.className = "empty-msg";
+        none.textContent = "Aucun match à venir disponible pour les paris.";
+        bettingMatchesEl.appendChild(none);
+      } else {
+        sortMatches(upcomingMatches).forEach(m => {
+          bettingMatchesEl.appendChild(createBettingMatchCard(m));
+        });
+      }
     }
   }
 
@@ -1263,18 +1814,22 @@ function renderBettingPage() {
       pendingBetsEl.innerHTML = "<p class='empty-msg'>Aucun pari en cours.</p>";
     } else {
       pendingBets.forEach(bet => {
-        const match = matches.find(m => m.id === bet.matchId);
+        const match = getAnyMatch(bet.matchId);
         if (!match) return;
         const card = document.createElement("div");
         card.className = "bet-card";
-        const betTypeLabel = bet.betType === 'home' ? match.h : bet.betType === 'away' ? match.a : 'Nul';
+        const pick = bet.label || (bet.betType === 'home' ? match.h : bet.betType === 'away' ? match.a : 'Nul');
+        const cancellable = isTestFlagged(match) || getMatchStatus(match).key === "upcoming";
         card.innerHTML = `
           <div class="bet-header">
             <span class="bet-status pending">En attente</span>
+            ${cancellable
+              ? '<button type="button" class="bet-cancel">↩ Retirer ma mise</button>'
+              : '<span class="bet-locked">🔒 Verrouillé</span>'}
           </div>
           <div class="bet-match">${teamLabel(match.h)} vs ${teamLabel(match.a)}</div>
           <div class="bet-details">
-            <span>Pari : ${betTypeLabel}</span>
+            <span>Pari : ${escapeHtml(pick)}</span>
             <span class="bet-odds">Cote : ${bet.odds.toFixed(2)}</span>
           </div>
           <div class="bet-details">
@@ -1282,6 +1837,24 @@ function renderBettingPage() {
             <span class="bet-potential">Gain : ${bet.potentialWin} 💰</span>
           </div>
         `;
+        card.querySelector(".bet-cancel")?.addEventListener("click", () => {
+          const m = getAnyMatch(bet.matchId);
+          // Re-vérifie au moment du clic : le match a pu démarrer entre-temps.
+          if (!m || (!isTestFlagged(m) && getMatchStatus(m).key !== "upcoming")) {
+            showToast("error", "Trop tard", "Le match a commencé, impossible de retirer ta mise.");
+            renderBettingPage();
+            return;
+          }
+          const r = window.Betting.cancelBet(bet.id);
+          if (r.success) {
+            showToast("info", "Pari retiré", `${r.amount} 💰 récupérés.`);
+            window.Betting.renderWalletBalance();
+            syncAfterBetChange();
+            renderBettingPage();
+          } else {
+            showToast("error", "Erreur", r.error || "Retrait impossible.");
+          }
+        });
         pendingBetsEl.appendChild(card);
       });
     }
@@ -1295,18 +1868,18 @@ function renderBettingPage() {
       completedBetsEl.innerHTML = "<p class='empty-msg'>Aucun pari terminé.</p>";
     } else {
       completedBets.sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt)).forEach(bet => {
-        const match = matches.find(m => m.id === bet.matchId);
+        const match = getAnyMatch(bet.matchId);
         if (!match) return;
         const card = document.createElement("div");
         card.className = `bet-card ${bet.status}`;
-        const betTypeLabel = bet.betType === 'home' ? match.h : bet.betType === 'away' ? match.a : 'Nul';
+        const pick = bet.label || (bet.betType === 'home' ? match.h : bet.betType === 'away' ? match.a : 'Nul');
         card.innerHTML = `
           <div class="bet-header">
             <span class="bet-status ${bet.status}">${bet.status === 'won' ? 'Gagné' : 'Perdu'}</span>
           </div>
           <div class="bet-match">${teamLabel(match.h)} vs ${teamLabel(match.a)}</div>
           <div class="bet-details">
-            <span>Pari : ${betTypeLabel}</span>
+            <span>Pari : ${escapeHtml(pick)}</span>
             <span class="bet-odds">Cote : ${bet.odds.toFixed(2)}</span>
           </div>
           <div class="bet-details">
@@ -1318,6 +1891,363 @@ function renderBettingPage() {
       });
     }
   }
+  lastBettingSignature = bettingSignature();
+}
+
+async function renderLeaderboard() {
+  const badge = document.getElementById("lbTestBadge");
+  const joinCard = document.getElementById("lbJoinCard");
+  const mine = document.getElementById("lbMine");
+  const list = document.getElementById("leaderboard");
+  if (!list) return;
+
+  const P = window.Players;
+  if (!P) return;
+
+  const test = P.isTestMode();
+  badge?.classList.toggle("hidden", !test);
+  document.body.classList.toggle("test-mode", test);
+
+  if (!P.isLeaderboardConfigured()) {
+    if (joinCard) {
+      joinCard.classList.remove("hidden");
+      joinCard.innerHTML = `
+        <div class="join-card-inner">
+          <span class="bracket-tease-icon">🏆</span>
+          <div>
+            <strong>Classement en ligne bientôt</strong>
+            <span>Il sera activé une fois Supabase configuré. Tes paris locaux fonctionnent déjà.</span>
+          </div>
+        </div>`;
+    }
+    mine?.classList.add("hidden");
+    document.getElementById("lbAdmin")?.classList.add("hidden");
+    list.innerHTML = "<p class='empty-msg'>Classement partagé indisponible pour le moment.</p>";
+    return;
+  }
+
+  if (P.hasJoined()) {
+    joinCard?.classList.add("hidden");
+    if (joinCard) joinCard.innerHTML = "";
+  } else {
+    joinCard?.classList.remove("hidden");
+    if (joinCard) {
+      joinCard.innerHTML = `
+        <div class="join-card-inner">
+          <span class="bracket-tease-icon">🏆</span>
+          <div>
+            <strong>Rejoins le classement</strong>
+            <span>Choisis un pays (pseudo public) + ton prénom (privé) pour apparaître.</span>
+          </div>
+          <div class="join-card-actions">
+            <button type="button" class="admin-btn" id="lbJoinBtn">Rejoindre →</button>
+            <button type="button" class="link-btn" id="lbLoginBtn">Déjà un compte ? Se connecter</button>
+          </div>
+        </div>`;
+      joinCard.querySelector("#lbJoinBtn")?.addEventListener("click", openJoinModal);
+      joinCard.querySelector("#lbLoginBtn")?.addEventListener("click", openLoginModal);
+    }
+  }
+
+  list.innerHTML = "<p class='empty-msg'>Chargement du classement…</p>";
+  await P.refreshLeaderboard();
+  renderLeaderboardTable();
+  renderAdminPlayersPanel();
+}
+
+function renderAdminPlayersPanel() {
+  const box = document.getElementById("lbAdmin");
+  if (!box) return;
+  const P = window.Players;
+
+  if (!P || !P.isLeaderboardConfigured() || !canEditStandings() || !P.isTestMode()) {
+    box.classList.add("hidden");
+    box.innerHTML = "";
+    return;
+  }
+
+  box.classList.remove("hidden");
+  const rows = P.getLeaderboardCache();
+  const taken = new Set(rows.map((r) => r.country));
+  const available = P.allWorldCupTeams().filter((c) => !taken.has(c));
+
+  box.innerHTML = `
+    <div class="lb-admin-head">🛠️ Admin (test) — ajoute et gère des joueurs fictifs</div>
+    <div class="lb-admin-add">
+      <select id="lbAddCountry" class="join-input">
+        ${available.map((c) => `<option value="${c}">${flag(c)} ${c}</option>`).join("") || "<option value=''>Tous les pays sont pris</option>"}
+      </select>
+      <input id="lbAddName" class="join-input" type="text" placeholder="Prénom (privé)" maxlength="30">
+      <input id="lbAddBalance" class="join-input lb-add-bal" type="number" min="0" value="100" title="Solde de départ">
+      <button type="button" class="admin-btn" id="lbAddBtn">Ajouter</button>
+    </div>
+    <div class="lb-admin-list"></div>
+  `;
+
+  const list = box.querySelector(".lb-admin-list");
+  rows.forEach((r) => {
+    const row = document.createElement("div");
+    row.className = "lb-admin-row";
+    row.innerHTML = `
+      <span class="lb-admin-team">${teamLabel(r.country)}</span>
+      <span class="lb-admin-pname">${r.name ? escapeHtml(r.name) : "—"}</span>
+      <span class="lb-admin-bal">${r.balance} 💰</span>
+      <span class="lb-admin-actions">
+        <button type="button" class="pts-btn" data-adj="-50">−50</button>
+        <button type="button" class="pts-btn" data-adj="50">+50</button>
+        <button type="button" class="score-clear" data-del title="Supprimer">✕</button>
+      </span>
+    `;
+    row.querySelector('[data-adj="-50"]').addEventListener("click", async () => {
+      await P.adminSetBalance(r.id, Math.max(0, r.balance - 50));
+      renderLeaderboard();
+    });
+    row.querySelector('[data-adj="50"]').addEventListener("click", async () => {
+      await P.adminSetBalance(r.id, r.balance + 50);
+      renderLeaderboard();
+    });
+    row.querySelector("[data-del]").addEventListener("click", async () => {
+      if (!window.confirm(`Supprimer ${r.country} du classement test ?`)) return;
+      await P.adminDeletePlayer(r.id);
+      renderLeaderboard();
+    });
+    list.appendChild(row);
+  });
+
+  box.querySelector("#lbAddBtn")?.addEventListener("click", async () => {
+    const country = box.querySelector("#lbAddCountry")?.value;
+    const name = box.querySelector("#lbAddName")?.value;
+    const balance = box.querySelector("#lbAddBalance")?.value;
+    const res = await P.adminAddPlayer(country, name, balance);
+    if (res.success) {
+      showToast("success", "Joueur ajouté", `${country} ajouté au classement test.`);
+      renderLeaderboard();
+    } else {
+      showToast("error", "Erreur", res.error || "Ajout impossible.");
+    }
+  });
+}
+
+function renderLeaderboardTable() {
+  const list = document.getElementById("leaderboard");
+  const mine = document.getElementById("lbMine");
+  const P = window.Players;
+  if (!list || !P) return;
+
+  const rows = P.getLeaderboardCache();
+  const profile = P.getProfile();
+  const admin = canEditStandings();
+
+  if (mine) {
+    if (profile && P.hasJoined()) {
+      const rank = P.getMyRank();
+      const me = rows.find((r) => r.id === profile.id);
+      const bal = me ? me.balance : P.currentStats().balance;
+      mine.classList.remove("hidden");
+      mine.innerHTML = `
+        <span class="lb-mine-rank">${rank ? "#" + rank : "—"}</span>
+        <span class="lb-mine-team">${teamLabel(profile.country)}</span>
+        <span class="lb-mine-balance">${bal} 💰</span>
+        <button type="button" class="link-btn" id="lbChange">Changer de pays</button>
+      `;
+      mine.querySelector("#lbChange")?.addEventListener("click", openJoinModal);
+    } else {
+      mine.classList.add("hidden");
+    }
+  }
+
+  if (!rows.length) {
+    list.innerHTML = "<p class='empty-msg'>Personne dans le classement pour l'instant. Sois le premier !</p>";
+    return;
+  }
+
+  const table = document.createElement("table");
+  table.className = "standings-table leaderboard-table";
+  table.innerHTML = `<thead><tr><th>#</th><th>Pays</th><th>Solde</th><th>V/P</th>${admin ? "<th>Prénom 🔒</th>" : ""}</tr></thead><tbody></tbody>`;
+  const tbody = table.querySelector("tbody");
+
+  rows.forEach((r, i) => {
+    const tr = document.createElement("tr");
+    if (profile && r.id === profile.id) tr.classList.add("lb-self");
+    const medal = i === 0 ? "🥇" : i === 1 ? "🥈" : i === 2 ? "🥉" : i + 1;
+    tr.innerHTML = `
+      <td class="lb-rank">${medal}</td>
+      <td class="team-cell">${teamLabel(r.country)}</td>
+      <td class="lb-balance"><strong>${r.balance} 💰</strong></td>
+      <td class="lb-record">${r.won}/${r.placed}</td>
+      ${admin ? `<td class="lb-name">${r.name ? escapeHtml(r.name) : "—"}</td>` : ""}
+    `;
+    tbody.appendChild(tr);
+  });
+
+  list.innerHTML = "";
+  list.appendChild(table);
+}
+
+function openJoinModal() {
+  const modal = document.getElementById("joinModal");
+  if (!modal || !window.Players) return;
+  if (!window.Players.isLeaderboardConfigured()) {
+    showToast("info", "Bientôt", "Le classement en ligne sera activé après la configuration Supabase.");
+    return;
+  }
+
+  const select = document.getElementById("joinCountry");
+  const nameInput = document.getElementById("joinName");
+  const pinInput = document.getElementById("joinPin");
+  const err = document.getElementById("joinError");
+  const submit = document.getElementById("joinSubmit");
+  const profile = window.Players.getProfile();
+
+  err?.classList.add("hidden");
+  if (nameInput) nameInput.value = profile?.name || "";
+  if (pinInput) {
+    pinInput.value = "";
+    pinInput.placeholder = profile ? "Laisse vide pour garder ton code" : "4 à 6 chiffres";
+  }
+  if (submit) submit.textContent = profile ? "Mettre à jour ⚽" : "Rejoindre ⚽";
+  if (select) select.innerHTML = "<option value=''>Chargement…</option>";
+
+  modal.classList.remove("hidden");
+  document.body.classList.add("modal-open");
+
+  window.Players.getAvailableCountries().then((countries) => {
+    if (!select) return;
+    if (!countries.length) {
+      select.innerHTML = "<option value=''>Tous les pays sont pris !</option>";
+      return;
+    }
+    select.innerHTML = countries
+      .map((c) => `<option value="${c}"${c === profile?.country ? " selected" : ""}>${flag(c)} ${c}</option>`)
+      .join("");
+  });
+}
+
+function closeJoinModal() {
+  const modal = document.getElementById("joinModal");
+  if (!modal) return;
+  modal.classList.add("hidden");
+  document.body.classList.remove("modal-open");
+}
+
+function initJoinModal() {
+  const modal = document.getElementById("joinModal");
+  if (!modal) return;
+
+  modal.querySelectorAll("[data-join-dismiss]").forEach((b) => b.addEventListener("click", closeJoinModal));
+  document.addEventListener("keydown", (e) => {
+    if (e.key === "Escape" && !modal.classList.contains("hidden")) closeJoinModal();
+  });
+
+  document.getElementById("joinToLogin")?.addEventListener("click", () => {
+    closeJoinModal();
+    openLoginModal();
+  });
+
+  const submit = document.getElementById("joinSubmit");
+  submit?.addEventListener("click", async () => {
+    const country = document.getElementById("joinCountry")?.value;
+    const name = document.getElementById("joinName")?.value;
+    const pin = document.getElementById("joinPin")?.value;
+    const err = document.getElementById("joinError");
+
+    submit.disabled = true;
+    const res = await window.Players.join(country, name, pin);
+    submit.disabled = false;
+
+    if (res.success) {
+      closeJoinModal();
+      showToast("success", "Bienvenue !", `Tu joues sous ${teamLabel(country)}.`);
+      await window.Players.pushStats();
+      renderLeaderboard();
+      renderBettingPage();
+    } else if (err) {
+      err.textContent = res.error;
+      err.classList.remove("hidden");
+      if (res.taken) openJoinModal();
+    }
+  });
+}
+
+function openLoginModal() {
+  const modal = document.getElementById("loginModal");
+  if (!modal || !window.Players) return;
+  if (!window.Players.isLeaderboardConfigured()) {
+    showToast("info", "Bientôt", "Le classement en ligne sera activé après la configuration Supabase.");
+    return;
+  }
+
+  const select = document.getElementById("loginCountry");
+  const pinInput = document.getElementById("loginPin");
+  const err = document.getElementById("loginError");
+
+  err?.classList.add("hidden");
+  if (pinInput) pinInput.value = "";
+  if (select) select.innerHTML = "<option value=''>Chargement…</option>";
+
+  modal.classList.remove("hidden");
+  document.body.classList.add("modal-open");
+
+  window.Players.getTakenCountriesList().then((countries) => {
+    if (!select) return;
+    if (!countries.length) {
+      select.innerHTML = "<option value=''>Aucun compte pour l'instant</option>";
+      return;
+    }
+    select.innerHTML = countries
+      .sort((a, b) => a.localeCompare(b, "fr"))
+      .map((c) => `<option value="${c}">${flag(c)} ${c}</option>`)
+      .join("");
+  });
+}
+
+function closeLoginModal() {
+  const modal = document.getElementById("loginModal");
+  if (!modal) return;
+  modal.classList.add("hidden");
+  document.body.classList.remove("modal-open");
+}
+
+function initLoginModal() {
+  const modal = document.getElementById("loginModal");
+  if (!modal) return;
+
+  modal.querySelectorAll("[data-login-dismiss]").forEach((b) => b.addEventListener("click", closeLoginModal));
+  document.addEventListener("keydown", (e) => {
+    if (e.key === "Escape" && !modal.classList.contains("hidden")) closeLoginModal();
+  });
+
+  document.getElementById("loginToJoin")?.addEventListener("click", () => {
+    closeLoginModal();
+    openJoinModal();
+  });
+
+  const submit = document.getElementById("loginSubmit");
+  submit?.addEventListener("click", async () => {
+    const country = document.getElementById("loginCountry")?.value;
+    const pin = document.getElementById("loginPin")?.value;
+    const err = document.getElementById("loginError");
+
+    submit.disabled = true;
+    const res = await window.Players.loginWithPin(country, pin);
+    submit.disabled = false;
+
+    if (res.success) {
+      if (res.data) applyProfileData(res.data);
+      resolveDueBets();
+      closeLoginModal();
+      showToast("success", "Connecté !", `Te voilà de retour sous ${teamLabel(res.country)}.`);
+      if (window.Betting) window.Betting.renderWalletBalance();
+      render();
+      renderGroups();
+      renderLeaderboard();
+      renderBettingPage();
+      await window.Players.pushStats();
+    } else if (err) {
+      err.textContent = res.error;
+      err.classList.remove("hidden");
+    }
+  });
 }
 
 function renderCountdown() {
@@ -1358,11 +2288,13 @@ function renderAdminBar() {
 
   const editable = canEditStandings();
   if (editable) {
+    const test = window.Players && window.Players.isTestMode();
     bar.innerHTML = `
       <p class="admin-msg ok">Mode admin — saisis les scores sur les matchs, les points des poules suivent (victoire 3, nul 1).</p>
       <button type="button" class="admin-btn outline" id="btnRecalc">Recalculer les points</button>
       <button type="button" class="admin-btn outline" id="btnLock">Verrouiller</button>
       <button type="button" class="admin-btn outline" id="btnRefresh">Actualiser</button>
+      <button type="button" class="admin-btn outline ${test ? "danger" : ""}" id="btnTestMode">Mode test : ${test ? "ON 🧪" : "OFF"}</button>
     `;
     document.getElementById("btnRecalc")?.addEventListener("click", () => {
       recalcStandingsFromScores();
@@ -1374,6 +2306,11 @@ function renderAdminBar() {
       renderGroups();
     });
     document.getElementById("btnRefresh")?.addEventListener("click", refreshStandingsFromCloud);
+    document.getElementById("btnTestMode")?.addEventListener("click", () => {
+      if (!window.Players) return;
+      window.Players.setTestMode(!window.Players.isTestMode());
+      window.location.reload();
+    });
     return;
   }
 
@@ -1403,9 +2340,7 @@ function renderGroupsOverview() {
   Object.keys(GROUPS).forEach((g) => {
     const mini = document.createElement("div");
     mini.className = "mini-group";
-    const sorted = [...GROUPS[g]].sort(
-      (a, b) => (standings[g][b] ?? 0) - (standings[g][a] ?? 0)
-    );
+    const sorted = rankedGroup(g);
     mini.innerHTML = `<div class="mini-title">Groupe ${g}</div><ol></ol>`;
     const ol = mini.querySelector("ol");
     sorted.forEach((team, i) => {
@@ -1449,10 +2384,7 @@ function renderGroups() {
     tabs.appendChild(btn);
   });
 
-  const teams = GROUPS[active];
-  const sorted = [...teams].sort(
-    (a, b) => (standings[active][b] ?? 0) - (standings[active][a] ?? 0)
-  );
+  const sorted = rankedGroup(active);
 
   const table = document.createElement("table");
   table.className = "standings-table" + (editable ? "" : " readonly");
@@ -1529,11 +2461,14 @@ function show(i) {
   document.querySelectorAll(".top-nav button").forEach((b) => {
     b.classList.toggle("active", parseInt(b.dataset.page, 10) === i);
   });
+  // Le bouton « Plus ▾ » reste surligné quand un onglet secondaire est ouvert.
+  document.getElementById("navMoreBtn")?.classList.toggle("active", [6, 7, 8, 10, 11].includes(i));
   document.querySelector(".logo-btn")?.classList.toggle("active", i === 0);
   window.scrollTo({ top: 0, behavior: "smooth" });
   if (i === 9) renderGroups();
   if (i === 11) document.getElementById("search")?.focus();
   if (i === 12) renderBettingPage();
+  if (i === 14) renderLeaderboard();
 }
 
 function openRoster(team) {
@@ -1711,14 +2646,39 @@ function closeMobileMenu() {
   }
 }
 
+function closeNavMore() {
+  const menu = document.getElementById("navMoreMenu");
+  const btn = document.getElementById("navMoreBtn");
+  menu?.setAttribute("hidden", "");
+  btn?.setAttribute("aria-expanded", "false");
+}
+
 function initNav() {
   document.querySelectorAll("[data-page]").forEach((btn) => {
     btn.addEventListener("click", () => {
       show(parseInt(btn.dataset.page, 10));
       closeMobileMenu();
+      closeNavMore();
     });
   });
   document.getElementById("themeToggle")?.addEventListener("click", toggleTheme);
+
+  // Menu « Plus ▾ » : regroupe les onglets secondaires sur PC.
+  const moreBtn = document.getElementById("navMoreBtn");
+  const moreMenu = document.getElementById("navMoreMenu");
+  moreBtn?.addEventListener("click", (e) => {
+    e.stopPropagation();
+    if (moreMenu.hasAttribute("hidden")) {
+      moreMenu.removeAttribute("hidden");
+      moreBtn.setAttribute("aria-expanded", "true");
+    } else {
+      closeNavMore();
+    }
+  });
+  document.addEventListener("click", (e) => {
+    if (!moreMenu || moreMenu.hasAttribute("hidden")) return;
+    if (!e.target.closest(".nav-more")) closeNavMore();
+  });
 
   const menuBtn = document.getElementById("menuToggle");
   const backdrop = document.getElementById("menuBackdrop");
@@ -1728,7 +2688,10 @@ function initNav() {
   });
   backdrop?.addEventListener("click", closeMobileMenu);
   document.addEventListener("keydown", (e) => {
-    if (e.key === "Escape") closeMobileMenu();
+    if (e.key === "Escape") {
+      closeMobileMenu();
+      closeNavMore();
+    }
   });
 
   document.getElementById("toggleOverview")?.addEventListener("click", () => {
@@ -1741,6 +2704,8 @@ function initNav() {
 
   const search = document.getElementById("search");
   search?.addEventListener("input", render);
+
+  document.getElementById("lbRefresh")?.addEventListener("click", () => renderLeaderboard());
 
   const topBtn = document.getElementById("scrollTop");
   window.addEventListener("scroll", () => {
@@ -1786,21 +2751,38 @@ function scheduleMatchRefresh() {
 
   matchRefreshTimer = setTimeout(() => {
     render();
+    maybeRefreshBetting();
     scheduleMatchRefresh();
   }, delay);
 }
 
 async function boot() {
+  applyDevSoon();
   initTheme();
   initNav();
   initWelcome();
+  initJoinModal();
+  initLoginModal();
   validateBracket();
+  document.body.classList.toggle("test-mode", !!(window.Players && window.Players.isTestMode()));
   const result = await initStandingsSync();
   syncMode = result.mode;
   if (window.Betting) window.Betting.init();
+  // Profil cross-appareils : on récupère le solde / paris / favoris en ligne.
+  if (window.Players && window.Players.hasJoined() && window.Players.pullProfileData) {
+    try {
+      const row = await window.Players.pullProfileData();
+      if (row && row.data) applyProfileData(row.data);
+    } catch (_) {}
+  }
+  resolveDueBets();
   render();
   renderGroups();
   scheduleMatchRefresh();
+  if (window.Players) {
+    window.Players.refreshLeaderboard();
+    if (window.Players.hasJoined()) window.Players.pushStats();
+  }
   if (isSyncEnabled() && !canEditStandings()) {
     setInterval(refreshStandingsFromCloud, 120000);
   }

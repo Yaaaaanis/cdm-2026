@@ -11,11 +11,27 @@ let wallet = {
   totalWinnings: 0,
   totalLosses: 0,
   hasReceivedWelcomeBonus: false,
-  favoriteBonusReceived: false
+  favoriteBonusReceived: false,
+  epoch: null
 };
 
 // Liste des paris
 let bets = [];
+
+function currentEpoch() {
+  return (window.CDM_CONFIG && window.CDM_CONFIG.walletEpoch) || "default";
+}
+
+function freshWallet() {
+  return {
+    balance: WELCOME_BONUS,
+    totalWinnings: 0,
+    totalLosses: 0,
+    hasReceivedWelcomeBonus: true,
+    favoriteBonusReceived: false,
+    epoch: currentEpoch()
+  };
+}
 
 // Initialiser le wallet
 function initWallet() {
@@ -24,23 +40,20 @@ function initWallet() {
     if (saved) {
       wallet = JSON.parse(saved);
     } else {
-      // Premier lancement - donner le bonus de bienvenue
-      wallet.balance = WELCOME_BONUS;
-      wallet.hasReceivedWelcomeBonus = true;
-      wallet.totalWinnings = 0;
-      wallet.totalLosses = 0;
-      wallet.favoriteBonusReceived = false;
+      wallet = freshWallet();
       saveWallet();
     }
   } catch (e) {
     console.error("Erreur lors du chargement du wallet:", e);
-    wallet = {
-      balance: WELCOME_BONUS,
-      totalWinnings: 0,
-      totalLosses: 0,
-      hasReceivedWelcomeBonus: true,
-      favoriteBonusReceived: false
-    };
+    wallet = freshWallet();
+  }
+
+  // Nouvelle "saison" → tout le monde repart à 100 pièces, paris remis à zéro.
+  if (wallet.epoch !== currentEpoch()) {
+    wallet = freshWallet();
+    bets = [];
+    saveWallet();
+    saveBets();
   }
 }
 
@@ -164,8 +177,11 @@ function calculateGoalsOdds(threshold, isOver) {
   }
 }
 
-// Créer un pari
-function createBet(matchId, betType, amount, odds) {
+// Créer un pari.
+// market    : '1x2' | 'dc' | 'ou' | 'btts' | 'exact' | 'scorer'
+// selection : identifiant stable propre au marché (ex 'home', '1X', 'over_2.5', '2-1', 'but:Mbappé')
+// label     : libellé lisible conservé pour l'historique
+function createBet(matchId, market, selection, label, amount, odds) {
   if (amount <= 0) {
     return { success: false, error: "Le montant doit être positif" };
   }
@@ -175,9 +191,12 @@ function createBet(matchId, betType, amount, odds) {
   }
 
   const bet = {
-    id: Date.now().toString(),
+    id: Date.now().toString() + Math.random().toString(36).slice(2, 6),
     matchId: matchId,
-    betType: betType, // 'home', 'draw', 'away'
+    market: market,
+    selection: selection,
+    label: label || selection,
+    betType: market === "1x2" ? selection : undefined, // rétro-compat affichage
     amount: amount,
     odds: odds,
     potentialWin: Math.floor(amount * odds),
@@ -229,28 +248,132 @@ function getTotalPotentialWin() {
   return getPendingBets().reduce((sum, bet) => sum + bet.potentialWin, 0);
 }
 
-// Résoudre un pari après un match
-function resolveBet(betId, matchResult) {
-  const bet = bets.find(b => b.id === betId);
-  if (!bet || bet.status !== 'pending') {
+// Détermine l'issue d'un pari à partir du score final et de la liste des buteurs.
+// Renvoie 'won', 'lost', ou null si on ne peut pas encore trancher (ex : buteur
+// non résolu tant que la liste des buteurs n'est pas saisie).
+function betOutcome(bet, score, scorers) {
+  const h = Number(score.h);
+  const a = Number(score.a);
+  const total = h + a;
+  const result = h > a ? "home" : h < a ? "away" : "draw";
+  const market = bet.market || (bet.betType ? "1x2" : null);
+  const sel = bet.selection != null ? bet.selection : bet.betType;
+
+  switch (market) {
+    case "1x2":
+      return sel === result ? "won" : "lost";
+    case "dc": {
+      const map = { "1X": ["home", "draw"], "12": ["home", "away"], "X2": ["draw", "away"] };
+      return (map[sel] || []).includes(result) ? "won" : "lost";
+    }
+    case "ou": {
+      const [side, thr] = String(sel).split("_");
+      const t = parseFloat(thr);
+      const isOver = total > t;
+      return (side === "over") === isOver ? "won" : "lost";
+    }
+    case "btts": {
+      const both = h > 0 && a > 0;
+      return (sel === "yes") === both ? "won" : "lost";
+    }
+    case "exact":
+      return sel === `${h}-${a}` ? "won" : "lost";
+    case "scorer": {
+      const name = String(sel).replace(/^but:/, "");
+      if (Array.isArray(scorers) && scorers.length) {
+        return scorers.includes(name) ? "won" : "lost";
+      }
+      if (total === 0) return "lost"; // aucun but => aucun buteur
+      return null; // en attente de la saisie des buteurs
+    }
+    default:
+      return null;
+  }
+}
+
+// Résout un pari avec le contexte du match (score + buteurs).
+function resolveBetWith(betId, score, scorers) {
+  const bet = bets.find((b) => b.id === betId);
+  if (!bet || bet.status !== "pending") {
     return { success: false, error: "Pari non trouvé ou déjà résolu" };
   }
-  
-  // matchResult: 'home', 'draw', 'away'
-  if (bet.betType === matchResult) {
-    // Pari gagné
-    bet.status = 'won';
+  const outcome = betOutcome(bet, score, scorers);
+  if (!outcome) return { success: false, pending: true };
+
+  if (outcome === "won") {
+    bet.status = "won";
     addFunds(bet.potentialWin, "Gain pari");
+    saveBets();
     return { success: true, won: true, amount: bet.potentialWin };
-  } else {
-    // Pari perdu
-    bet.status = 'lost';
-    wallet.totalLosses += bet.amount;
-    saveWallet();
-    return { success: true, won: false };
   }
-  
+  bet.status = "lost";
+  wallet.totalLosses += bet.amount;
+  saveWallet();
   saveBets();
+  return { success: true, won: false };
+}
+
+// Ancienne API (1N2 uniquement) — conservée par sécurité.
+function resolveBet(betId, matchResult) {
+  return resolveBetWith(betId, matchResult === "home" ? { h: 1, a: 0 } : matchResult === "away" ? { h: 0, a: 1 } : { h: 1, a: 1 }, null);
+}
+
+// Annuler un pari en attente : rembourse la mise et supprime le pari.
+function cancelBet(betId) {
+  const idx = bets.findIndex((b) => b.id === betId);
+  if (idx === -1) return { success: false, error: "Pari introuvable" };
+  const bet = bets[idx];
+  if (bet.status !== "pending") return { success: false, error: "Pari déjà résolu" };
+  wallet.balance += bet.amount;
+  saveWallet();
+  bets.splice(idx, 1);
+  saveBets();
+  return { success: true, amount: bet.amount };
+}
+
+// Statistiques agrégées pour le classement
+function getStats() {
+  return {
+    balance: wallet.balance,
+    placed: bets.length,
+    won: bets.filter((b) => b.status === "won").length,
+    lost: bets.filter((b) => b.status === "lost").length
+  };
+}
+
+// Exporter l'état (pour la synchro de profil entre appareils)
+function exportState() {
+  return { wallet: { ...wallet }, bets: bets.map((b) => ({ ...b })) };
+}
+
+// Importer un état venant du serveur. Respecte l'epoch : si la saison a changé
+// (walletEpoch différent), on repart proprement à 100 plutôt que d'importer un
+// vieux solde.
+function importState(state) {
+  if (!state || typeof state !== "object") return;
+  if (state.wallet && typeof state.wallet === "object") {
+    if (state.wallet.epoch !== currentEpoch()) {
+      wallet = freshWallet();
+      bets = [];
+    } else {
+      wallet = { ...freshWallet(), ...state.wallet };
+      bets = Array.isArray(state.bets) ? state.bets : [];
+    }
+  } else if (Array.isArray(state.bets)) {
+    bets = state.bets;
+  }
+  saveWallet();
+  saveBets();
+  renderWalletBalance();
+}
+
+// Remettre le porte-monnaie à zéro (100 pièces, paris effacés)
+function resetWallet() {
+  wallet = freshWallet();
+  bets = [];
+  saveWallet();
+  saveBets();
+  renderWalletBalance();
 }
 
 // Afficher le solde dans l'interface
@@ -282,7 +405,14 @@ window.Betting = {
   getAllBets,
   getPendingBets,
   getCompletedBets,
+  cancelBet,
   getTotalPotentialWin,
   resolveBet,
-  renderWalletBalance
+  resolveBetWith,
+  betOutcome,
+  renderWalletBalance,
+  getStats,
+  exportState,
+  importState,
+  resetWallet
 };

@@ -6,6 +6,7 @@
   <meta name="description" content="Calendrier Coupe du monde 2026 — phase de groupes">
   <meta name="theme-color" content="#D4AF37">
   <link rel="manifest" href="manifest.json">
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🏆</text></svg>">
   <title>CDM 2026</title>
   <link rel="stylesheet" href="style.css">
 </head>
@@ -20,13 +21,19 @@
     <button type="button" data-page="3">J.2</button>
     <button type="button" data-page="4">J.3</button>
     <button type="button" data-page="5">Favoris</button>
-    <button type="button" data-page="6">France</button>
-    <button type="button" data-page="7">Maroc</button>
-    <button type="button" data-page="8">Portugal</button>
     <button type="button" data-page="9">Poules</button>
-    <button type="button" data-page="10">Finale</button>
-    <button type="button" data-page="11">Chercher</button>
     <button type="button" data-page="12">💰 Paris</button>
+    <button type="button" data-page="14">🏆 Classement</button>
+    <div class="nav-more">
+      <button type="button" class="nav-more-btn" id="navMoreBtn" aria-haspopup="true" aria-expanded="false">Plus ▾</button>
+      <div class="nav-more-menu" id="navMoreMenu" hidden>
+        <button type="button" data-page="6">🇫🇷 France</button>
+        <button type="button" data-page="7">🇲🇦 Maroc</button>
+        <button type="button" data-page="8">🇵🇹 Portugal</button>
+        <button type="button" data-page="10">🏆 Finale</button>
+        <button type="button" data-page="11">🔍 Chercher</button>
+      </div>
+    </div>
   </nav>
   <div class="wallet-display" id="walletBalance">0 💰</div>
   <button type="button" id="themeToggle" class="icon-btn" aria-label="Changer de thème">🌙</button>
@@ -141,6 +148,7 @@
 
 <section class="page">
   <h2>💰 Mes Paris</h2>
+  <p class="section-hint betting-top-hint">💡 Changé d'avis ? Tant que le match n'a pas commencé, va dans <strong>« Paris en cours »</strong> (plus bas sur cette page) et clique <strong>« ↩ Retirer ma mise »</strong> sur le pari concerné : tes pièces reviennent aussitôt dans ton solde. Après le coup d'envoi, le pari est verrouillé.</p>
   <div class="wallet-info">
     <div class="wallet-card">
       <span class="wallet-label">Solde</span>
@@ -172,6 +180,19 @@
   <div id="rosterContent"></div>
 </section>
 
+<section class="page" id="leaderboardPage">
+  <h2>🏆 Classement des parieurs</h2>
+  <p class="section-hint">Solde de pièces · identité anonyme par pays. Ton prénom reste privé (organisateur uniquement).</p>
+  <div id="lbTestBadge" class="test-badge hidden">🧪 Mode test — classement séparé</div>
+  <div id="lbJoinCard" class="join-card"></div>
+  <div id="lbMine" class="lb-mine hidden"></div>
+  <div class="lb-toolbar">
+    <button type="button" id="lbRefresh" class="admin-btn outline">Actualiser</button>
+  </div>
+  <div id="lbAdmin" class="lb-admin hidden"></div>
+  <div id="leaderboard" class="leaderboard"></div>
+</section>
+
 <button type="button" id="scrollTop" class="scroll-top hidden" aria-label="Remonter">↑</button>
 
 <div id="toastContainer" class="toast-container"></div>
@@ -196,12 +217,50 @@
   </div>
 </div>
 
+<div id="joinModal" class="welcome-modal hidden" role="dialog" aria-modal="true" aria-labelledby="joinTitle">
+  <div class="welcome-overlay" data-join-dismiss></div>
+  <div class="welcome-card join-modal-card">
+    <button type="button" class="welcome-close" data-join-dismiss aria-label="Fermer">✕</button>
+    <div class="welcome-emoji">🏆</div>
+    <h2 id="joinTitle">Rejoindre le classement</h2>
+    <p class="welcome-intro">Choisis un pays — ce sera ton pseudo public. Ton prénom n'est visible que par l'organisateur.</p>
+    <label class="join-label" for="joinName">Ton prénom <span class="join-private">privé 🔒</span></label>
+    <input id="joinName" type="text" class="join-input" placeholder="Ex : Yanis" maxlength="30" autocomplete="off">
+    <label class="join-label" for="joinCountry">Ton pays <span class="join-private">public</span></label>
+    <select id="joinCountry" class="join-input"></select>
+    <label class="join-label" for="joinPin">Code secret <span class="join-private">pour te reconnecter ailleurs 🔑</span></label>
+    <input id="joinPin" type="password" inputmode="numeric" class="join-input" placeholder="4 à 6 chiffres" maxlength="6" autocomplete="off">
+    <p id="joinError" class="join-error hidden"></p>
+    <button type="button" class="welcome-cta" id="joinSubmit">Rejoindre ⚽</button>
+    <button type="button" class="link-btn join-switch" id="joinToLogin">J'ai déjà un compte → me connecter</button>
+  </div>
+</div>
+
+<div id="loginModal" class="welcome-modal hidden" role="dialog" aria-modal="true" aria-labelledby="loginTitle">
+  <div class="welcome-overlay" data-login-dismiss></div>
+  <div class="welcome-card join-modal-card">
+    <button type="button" class="welcome-close" data-login-dismiss aria-label="Fermer">✕</button>
+    <div class="welcome-emoji">🔑</div>
+    <h2 id="loginTitle">Se connecter</h2>
+    <p class="welcome-intro">Retrouve ton solde, tes paris et tes équipes favorites sur cet appareil.</p>
+    <label class="join-label" for="loginCountry">Ton pays</label>
+    <select id="loginCountry" class="join-input"></select>
+    <label class="join-label" for="loginPin">Ton code secret</label>
+    <input id="loginPin" type="password" inputmode="numeric" class="join-input" placeholder="Ton code à 4-6 chiffres" maxlength="6" autocomplete="off">
+    <p id="loginError" class="join-error hidden"></p>
+    <button type="button" class="welcome-cta" id="loginSubmit">Se connecter 🔓</button>
+    <button type="button" class="link-btn join-switch" id="loginToJoin">Pas encore de compte → rejoindre</button>
+  </div>
+</div>
+
 <script src="config.js"></script>
 <script src="flags.js"></script>
 <script src="phases.js"></script>
 <script src="squads.js"></script>
+<script src="odds.js"></script>
 <script src="sync.js"></script>
 <script src="betting.js"></script>
+<script src="players.js"></script>
 <script src="script.js"></script>
 
 </body>
