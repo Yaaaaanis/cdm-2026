@@ -1329,6 +1329,128 @@ h3,
   color: var(--muted);
 }
 
+/* Carte de match cliquable */
+.clickable-card {
+  cursor: pointer;
+  transition: transform 0.12s ease, border-color 0.12s ease;
+}
+
+.clickable-card:hover {
+  transform: translateY(-2px);
+  border-color: var(--gold);
+}
+
+/* Fiche détaillée d'un match */
+.match-modal-card {
+  text-align: left;
+  max-width: 460px;
+}
+
+.mm-head {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+  text-align: center;
+  margin-bottom: 16px;
+}
+
+.mm-status {
+  align-self: center;
+}
+
+.mm-teams {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font-size: 1.25rem;
+  font-weight: 800;
+}
+
+.mm-vs {
+  color: var(--muted);
+  font-size: 0.9rem;
+  font-weight: 600;
+}
+
+.mm-score {
+  font-size: 1.8rem;
+  font-weight: 900;
+  color: var(--gold);
+}
+
+.mm-score span {
+  color: var(--muted);
+  margin: 0 4px;
+}
+
+.mm-info {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  background: var(--surface2);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 14px 16px;
+}
+
+.mm-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 0.95rem;
+}
+
+.mm-ic {
+  width: 22px;
+  text-align: center;
+  flex-shrink: 0;
+}
+
+.mm-section-title {
+  margin: 18px 0 8px;
+  font-weight: 700;
+  font-size: 0.9rem;
+  color: var(--muted);
+}
+
+.mm-odds {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 8px;
+}
+
+.mm-odd {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+  background: var(--surface2);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 10px 6px;
+}
+
+.mm-odd-l {
+  font-size: 0.78rem;
+  color: var(--muted);
+  text-align: center;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 100%;
+}
+
+.mm-odd-v {
+  font-size: 1.1rem;
+  font-weight: 800;
+  color: var(--gold);
+}
+
+.match-modal-card .welcome-cta {
+  margin-top: 16px;
+}
+
 .wallet-label {
   display: block;
   font-size: 0.75rem;

@@ -994,6 +994,14 @@ function createCard(m, opts = {}) {
   `;
 
   if (!knockout) bindScoreControls(card, m);
+
+  // Clic sur la carte = fiche détaillée du match (sauf clics sur un contrôle).
+  card.classList.add("clickable-card");
+  card.addEventListener("click", (e) => {
+    if (e.target.closest("button, input, select, a, [data-team-roster]")) return;
+    openMatchModal(m);
+  });
+
   return card;
 }
 
@@ -2208,6 +2216,86 @@ function closeLoginModal() {
   document.body.classList.remove("modal-open");
 }
 
+// Fiche détaillée d'un match (stade, ville, heure locale, cotes…).
+function matchModalHtml(m) {
+  const status = getMatchStatus(m);
+  const v = window.Venues ? window.Venues.venueFor(m) : null;
+  const s = getScore(m);
+  const dateLabel = getDateObj(m).toLocaleDateString("fr-FR", {
+    weekday: "long",
+    day: "numeric",
+    month: "long",
+    year: "numeric"
+  });
+
+  let oddsHtml = "";
+  try {
+    const board = window.Odds && window.Odds.getMarketBoard(m);
+    const m1x2 = board && board.find((b) => b.key === "1x2");
+    if (m1x2) {
+      oddsHtml = `<div class="mm-odds">${m1x2.selections
+        .map(
+          (sel) =>
+            `<div class="mm-odd"><span class="mm-odd-l">${escapeHtml(sel.short)}</span><span class="mm-odd-v">${sel.odds.toFixed(2)}</span></div>`
+        )
+        .join("")}</div>`;
+    }
+  } catch (_) {}
+
+  const scoreLine = s
+    ? `<div class="mm-score">${s.h} <span>–</span> ${s.a}</div>`
+    : '<div class="mm-vs">vs</div>';
+
+  return `
+    <div class="mm-head">
+      <span class="status status-${status.key} mm-status">${status.label}</span>
+      <div class="mm-teams">
+        <span class="mm-team">${teamLabel(m.h)}</span>
+        ${scoreLine}
+        <span class="mm-team">${teamLabel(m.a)}</span>
+      </div>
+    </div>
+    <div class="mm-info">
+      <div class="mm-row"><span class="mm-ic">📅</span><span>${dateLabel}</span></div>
+      <div class="mm-row"><span class="mm-ic">🕒</span><span><strong>${m.t}</strong> heure de Paris${v ? ` · <strong>${v.local}</strong> sur place` : ""}</span></div>
+      ${v ? `<div class="mm-row"><span class="mm-ic">🏟️</span><span>${escapeHtml(v.stadium)}</span></div>` : ""}
+      ${v ? `<div class="mm-row"><span class="mm-ic">📍</span><span>${escapeHtml(v.city)}, ${v.flag} ${escapeHtml(v.country)}</span></div>` : ""}
+      ${m.g ? `<div class="mm-row"><span class="mm-ic">🏆</span><span>Groupe ${m.g}${m.d ? ` · Journée ${m.d}` : ""}</span></div>` : ""}
+    </div>
+    ${oddsHtml ? `<div class="mm-section-title">Cotes — résultat du match</div>${oddsHtml}` : ""}
+    ${status.key === "upcoming" ? '<button type="button" class="welcome-cta" id="mmBetBtn">💰 Parier sur ce match</button>' : ""}
+  `;
+}
+
+function openMatchModal(m) {
+  const modal = document.getElementById("matchModal");
+  const body = document.getElementById("matchModalBody");
+  if (!modal || !body || !m) return;
+  body.innerHTML = matchModalHtml(m);
+  modal.classList.remove("hidden");
+  document.body.classList.add("modal-open");
+  body.querySelector("#mmBetBtn")?.addEventListener("click", () => {
+    closeMatchModal();
+    show(12);
+  });
+}
+
+function closeMatchModal() {
+  const modal = document.getElementById("matchModal");
+  if (!modal) return;
+  modal.classList.add("hidden");
+  document.body.classList.remove("modal-open");
+}
+
+function initMatchModal() {
+  const modal = document.getElementById("matchModal");
+  if (!modal) return;
+  modal.querySelectorAll("[data-match-dismiss]").forEach((b) => b.addEventListener("click", closeMatchModal));
+  document.addEventListener("keydown", (e) => {
+    if (e.key === "Escape" && !modal.classList.contains("hidden")) closeMatchModal();
+  });
+}
+
 function initLoginModal() {
   const modal = document.getElementById("loginModal");
   if (!modal) return;
@@ -2763,6 +2851,7 @@ async function boot() {
   initWelcome();
   initJoinModal();
   initLoginModal();
+  initMatchModal();
   validateBracket();
   document.body.classList.toggle("test-mode", !!(window.Players && window.Players.isTestMode()));
   const result = await initStandingsSync();
