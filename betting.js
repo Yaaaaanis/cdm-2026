@@ -4,6 +4,7 @@ const WALLET_KEY = "cdm_wallet";
 const BETS_KEY = "cdm_bets";
 const WELCOME_BONUS = 100; // Bonus de bienvenue en pièces virtuelles
 const FAVORITE_BONUS = 50; // Bonus quand on ajoute un favori
+const DAILY_BONUS = 20; // Bonus de connexion quotidien
 
 // État du wallet
 let wallet = {
@@ -29,8 +30,41 @@ function freshWallet() {
     totalLosses: 0,
     hasReceivedWelcomeBonus: true,
     favoriteBonusReceived: false,
+    lastDailyBonus: null,
+    seenBadges: [],
     epoch: currentEpoch()
   };
+}
+
+function todayStr() {
+  const d = new Date();
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+}
+
+// Bonus de connexion quotidien (une fois par jour).
+function canClaimDaily() {
+  return wallet.lastDailyBonus !== todayStr();
+}
+
+function claimDailyBonus() {
+  if (!canClaimDaily()) return { claimed: false };
+  wallet.lastDailyBonus = todayStr();
+  wallet.balance += DAILY_BONUS;
+  wallet.totalWinnings += DAILY_BONUS;
+  saveWallet();
+  return { claimed: true, amount: DAILY_BONUS };
+}
+
+// Badges déjà vus (pour ne toaster qu'une fois les nouveaux).
+function getSeenBadges() {
+  return Array.isArray(wallet.seenBadges) ? wallet.seenBadges : [];
+}
+
+function addSeenBadges(ids) {
+  const set = new Set(getSeenBadges());
+  ids.forEach((i) => set.add(i));
+  wallet.seenBadges = [...set];
+  saveWallet();
 }
 
 // Initialiser le wallet
@@ -208,6 +242,80 @@ function createBet(matchId, market, selection, label, amount, odds) {
   saveBets();
 
   return { success: true, bet: bet };
+}
+
+// Créer un pari combiné : plusieurs sélections (de matchs différents).
+// Les cotes se multiplient ; le combiné est gagné seulement si TOUTES les
+// sélections passent. legs = [{ matchId, market, selection, label, odds, matchLabel }]
+function createCombo(legs, amount) {
+  if (!Array.isArray(legs) || legs.length < 2) {
+    return { success: false, error: "Ajoute au moins 2 sélections." };
+  }
+  if (amount <= 0) {
+    return { success: false, error: "Le montant doit être positif" };
+  }
+  if (!deductFunds(amount)) {
+    return { success: false, error: "Solde insuffisant" };
+  }
+
+  const combinedOdds = Math.round(legs.reduce((p, l) => p * l.odds, 1) * 100) / 100;
+  const bet = {
+    id: Date.now().toString() + Math.random().toString(36).slice(2, 6),
+    type: "combo",
+    legs: legs.map((l) => ({
+      matchId: l.matchId,
+      market: l.market,
+      selection: l.selection,
+      label: l.label,
+      odds: l.odds,
+      matchLabel: l.matchLabel || ""
+    })),
+    amount: amount,
+    odds: combinedOdds,
+    potentialWin: Math.floor(amount * combinedOdds),
+    status: "pending",
+    createdAt: new Date().toISOString()
+  };
+
+  bets.push(bet);
+  saveBets();
+  return { success: true, bet: bet };
+}
+
+// Résout un combiné. getCtx(matchId) doit renvoyer { score, scorers } si le
+// match est résolvable, sinon null. Perdu dès qu'une jambe est perdue ; gagné
+// quand toutes les jambes sont gagnées ; sinon reste en attente.
+function resolveComboWith(betId, getCtx) {
+  const bet = bets.find((b) => b.id === betId);
+  if (!bet || bet.type !== "combo" || bet.status !== "pending") {
+    return { success: false };
+  }
+
+  let allWon = true;
+  for (const leg of bet.legs) {
+    const ctx = getCtx(leg.matchId);
+    if (!ctx || !ctx.score) {
+      allWon = false;
+      continue;
+    }
+    const outcome = betOutcome({ market: leg.market, selection: leg.selection }, ctx.score, ctx.scorers);
+    if (outcome === "lost") {
+      bet.status = "lost";
+      wallet.totalLosses += bet.amount;
+      saveWallet();
+      saveBets();
+      return { success: true, won: false };
+    }
+    if (outcome !== "won") allWon = false;
+  }
+
+  if (allWon) {
+    bet.status = "won";
+    addFunds(bet.potentialWin, "Gain combiné");
+    saveBets();
+    return { success: true, won: true, amount: bet.potentialWin };
+  }
+  return { success: false, pending: true };
 }
 
 // Sauvegarder les paris
@@ -402,6 +510,7 @@ window.Betting = {
   calculateExactScoreOdds,
   calculateGoalsOdds,
   createBet,
+  createCombo,
   getAllBets,
   getPendingBets,
   getCompletedBets,
@@ -409,7 +518,12 @@ window.Betting = {
   getTotalPotentialWin,
   resolveBet,
   resolveBetWith,
+  resolveComboWith,
   betOutcome,
+  canClaimDaily,
+  claimDailyBonus,
+  getSeenBadges,
+  addSeenBadges,
   renderWalletBalance,
   getStats,
   exportState,

@@ -215,6 +215,75 @@ let oddsEditMatches = new Set(); // cartes en cours d'édition de cotes (transit
 let bettingMaintenance = false; // si true, les paris sont masqués pour tout le monde sauf l'admin (synchronisé)
 let syncMode = "local";
 
+// Panier de paris combinés (local, transitoire mais conservé entre rechargements).
+const COMBO_SLIP_KEY = "cdm_combo_slip";
+let comboSlip = loadComboSlip();
+
+function loadComboSlip() {
+  try {
+    const raw = JSON.parse(localStorage.getItem(COMBO_SLIP_KEY) || "[]");
+    return Array.isArray(raw) ? raw : [];
+  } catch (_) {
+    return [];
+  }
+}
+
+function saveComboSlip() {
+  localStorage.setItem(COMBO_SLIP_KEY, JSON.stringify(comboSlip));
+}
+
+function comboOdds() {
+  return comboSlip.reduce((p, l) => p * l.odds, 1);
+}
+
+// Ajoute (ou remplace) une sélection au combiné. Une seule jambe par match.
+function addToCombo(leg) {
+  // On autorise plusieurs sélections d'un même match (ex. "France gagne" +
+  // "Mbappé buteur"). Une seule sélection par marché à choix unique ; pour les
+  // buteurs on peut en cumuler plusieurs (dédup. par buteur exact).
+  const i = comboSlip.findIndex((l) =>
+    l.matchId === leg.matchId && l.market === leg.market &&
+    (leg.market === "scorer" ? l.selection === leg.selection : true)
+  );
+  if (i !== -1) comboSlip[i] = leg;
+  else comboSlip.push(leg);
+  saveComboSlip();
+  showToast("success", "Ajouté au combiné 🎰", `${leg.label} · cote ${leg.odds.toFixed(2)}`);
+  renderComboSlip();
+  const slip = document.getElementById("comboSlip");
+  if (slip && !slip.classList.contains("hidden")) {
+    const y = slip.getBoundingClientRect().top + window.pageYOffset - 70;
+    window.scrollTo({ top: Math.max(0, y), behavior: "smooth" });
+  }
+}
+
+// État courant d'une sélection d'un combiné : "won" (passé), "lost" (raté) ou
+// "pending" (match pas encore joué / score non saisi). Utilise le vrai score,
+// ou le score de test si le match est flaggé en test.
+function comboLegStatus(leg) {
+  const m = getAnyMatch(leg.matchId);
+  if (!m || !window.Betting) return "pending";
+  const ctx = betContext(m);
+  if (!ctx || !ctx.score) return "pending";
+  const o = window.Betting.betOutcome(
+    { market: leg.market, selection: leg.selection },
+    ctx.score,
+    ctx.scorers
+  );
+  return o === "won" ? "won" : o === "lost" ? "lost" : "pending";
+}
+
+// Rend une ligne de sélection d'un combiné avec sa pastille d'état.
+function comboLegHtml(leg) {
+  const st = comboLegStatus(leg);
+  const icon = st === "won" ? "✅" : st === "lost" ? "❌" : "⏳";
+  const tip = st === "won" ? "Passé" : st === "lost" ? "Raté" : "En attente";
+  return `<div class="combo-bet-leg leg-${st}" title="${tip}">
+    <span class="leg-state">${icon}</span>
+    <span class="leg-text"><span class="leg-match">${escapeHtml(leg.matchLabel)}</span><span class="leg-pick">${escapeHtml(leg.label)} · ${leg.odds.toFixed(2)}</span></span>
+  </div>`;
+}
+
 // Lecture d'une cote forcée par l'admin (utilisée par odds.js).
 window.CDM_getOddsOverride = function (matchId, market, sel) {
   const o = oddsOverrides[matchId];
@@ -343,7 +412,6 @@ function settleMatchBets(m, ctx) {
   if (!ctx) ctx = betContext(m);
   if (!ctx.score) return 0;
   const pending = window.Betting.getPendingBets().filter((b) => b.matchId === m.id);
-  if (!pending.length) return 0;
 
   let changed = false;
   let winnings = 0;
@@ -354,6 +422,19 @@ function settleMatchBets(m, ctx) {
       if (r.won) winnings += r.amount;
     }
   });
+
+  // Combinés touchant ce match : tentés dès qu'un score est saisi.
+  const combos = window.Betting.getPendingBets().filter(
+    (b) => b.type === "combo" && b.legs.some((l) => l.matchId === m.id)
+  );
+  combos.forEach((bet) => {
+    const r = window.Betting.resolveComboWith(bet.id, settleCtx);
+    if (r.success) {
+      changed = true;
+      if (r.won) winnings += r.amount;
+    }
+  });
+
   if (changed) {
     window.Betting.renderWalletBalance();
     syncAfterBetChange();
@@ -528,7 +609,21 @@ function bindBettingControls(card, m) {
       };
       if (info) {
         info.hidden = false;
-        info.innerHTML = `Sélection : <strong>${escapeHtml(sel.label)}</strong> · cote ${sel.odds.toFixed(2)}`;
+        info.innerHTML = `<span>Sélection : <strong>${escapeHtml(sel.label)}</strong> · cote ${sel.odds.toFixed(2)}</span><button type="button" class="combo-add-btn">➕ Combiné</button>`;
+        info.querySelector(".combo-add-btn")?.addEventListener("click", () => {
+          if (!isTestFlagged(m) && getMatchStatus(m).key !== "upcoming") {
+            showToast("error", "Trop tard", "Le match a commencé.");
+            return;
+          }
+          addToCombo({
+            matchId: m.id,
+            market: sel.market,
+            selection: sel.selection,
+            label: sel.label,
+            odds: sel.odds,
+            matchLabel: `${m.h} - ${m.a}`
+          });
+        });
       }
       updateBetButton();
     });
@@ -592,14 +687,19 @@ function resolveDueBets() {
   let winnings = 0;
 
   pending.forEach((bet) => {
-    const m = getAnyMatch(bet.matchId);
-    if (!m) return;
-    const ctx = betContext(m);
-    if (!ctx.score) return;
-    // Match réel : on attend qu'il soit terminé. Match en test : résolution immédiate.
-    if (!ctx.isTest && getMatchStatus(m).key !== "done") return;
-    const r = window.Betting.resolveBetWith(bet.id, ctx.score, ctx.scorers);
-    if (r.success) {
+    let r;
+    if (bet.type === "combo") {
+      r = window.Betting.resolveComboWith(bet.id, resolvableCtx);
+    } else {
+      const m = getAnyMatch(bet.matchId);
+      if (!m) return;
+      const ctx = betContext(m);
+      if (!ctx.score) return;
+      // Match réel : on attend qu'il soit terminé. Match en test : résolution immédiate.
+      if (!ctx.isTest && getMatchStatus(m).key !== "done") return;
+      r = window.Betting.resolveBetWith(bet.id, ctx.score, ctx.scorers);
+    }
+    if (r && r.success) {
       changed = true;
       if (r.won) winnings += r.amount;
     }
@@ -1686,6 +1786,258 @@ function maybeRefreshBetting() {
   if (bettingSignature() !== lastBettingSignature) renderBettingPage();
 }
 
+// Contexte résolvable d'un match (avec attente que le vrai match soit terminé).
+function resolvableCtx(matchId) {
+  const m = getAnyMatch(matchId);
+  if (!m) return null;
+  const ctx = betContext(m);
+  if (!ctx.score) return null;
+  if (!ctx.isTest && getMatchStatus(m).key !== "done") return null;
+  return ctx;
+}
+
+// Contexte dès qu'un score est saisi (utilisé quand l'admin valide un score).
+function settleCtx(matchId) {
+  const m = getAnyMatch(matchId);
+  if (!m) return null;
+  const ctx = betContext(m);
+  return ctx.score ? ctx : null;
+}
+
+// Bonus de connexion quotidien.
+function renderDailyBonus() {
+  const el = document.getElementById("dailyBonus");
+  if (!el || !window.Betting) return;
+  if (!window.Betting.canClaimDaily()) {
+    el.innerHTML = "";
+    el.classList.add("hidden");
+    return;
+  }
+  el.classList.remove("hidden");
+  el.innerHTML = `
+    <button type="button" class="daily-bonus-btn" id="dailyBonusBtn">
+      🎁 <span>Récupère ton bonus du jour</span> <strong>+20 💰</strong>
+    </button>`;
+  el.querySelector("#dailyBonusBtn")?.addEventListener("click", () => {
+    const r = window.Betting.claimDailyBonus();
+    if (r.claimed) {
+      showToast("success", "Bonus du jour 🎁", `+${r.amount} 💰 ajoutés à ton solde. Reviens demain !`);
+      window.Betting.renderWalletBalance();
+      syncAfterBetChange();
+      renderBettingPage();
+    }
+  });
+}
+
+// Panier de paris combinés.
+function renderComboSlip() {
+  const el = document.getElementById("comboSlip");
+  if (!el || !window.Betting) return;
+  if (!comboSlip.length) {
+    el.innerHTML = "";
+    el.classList.add("hidden");
+    return;
+  }
+  el.classList.remove("hidden");
+  const odds = comboOdds();
+  const enough = comboSlip.length >= 2;
+  el.innerHTML = `
+    <div class="combo-head">🎰 Mon combiné <span class="combo-count">${comboSlip.length} sélection${comboSlip.length > 1 ? "s" : ""}</span></div>
+    <div class="combo-legs">
+      ${comboSlip
+        .map(
+          (l, i) => `
+        <div class="combo-leg">
+          <div class="combo-leg-info">
+            <span class="combo-leg-match">${escapeHtml(l.matchLabel)}</span>
+            <span class="combo-leg-pick">${escapeHtml(l.label)} · ${l.odds.toFixed(2)}</span>
+          </div>
+          <button type="button" class="combo-leg-del" data-i="${i}" aria-label="Retirer">✕</button>
+        </div>`
+        )
+        .join("")}
+    </div>
+    <div class="combo-total">Cote totale : <strong>${odds.toFixed(2)}</strong></div>
+    ${
+      enough
+        ? `<div class="combo-stake-row">
+            <input type="number" class="betting-input combo-stake" placeholder="Mise (💰)" min="1" max="${window.Betting.getBalance()}">
+            <button type="button" class="betting-btn combo-validate" disabled>Valider</button>
+          </div>`
+        : `<p class="combo-hint">Ajoute au moins 2 sélections pour valider (tu peux en cumuler plusieurs sur le même match).</p>`
+    }
+    <button type="button" class="link-btn combo-clear">Vider le combiné</button>
+  `;
+
+  el.querySelectorAll(".combo-leg-del").forEach((b) =>
+    b.addEventListener("click", () => {
+      comboSlip.splice(parseInt(b.dataset.i, 10), 1);
+      saveComboSlip();
+      renderComboSlip();
+    })
+  );
+  el.querySelector(".combo-clear")?.addEventListener("click", () => {
+    comboSlip = [];
+    saveComboSlip();
+    renderComboSlip();
+  });
+
+  const stake = el.querySelector(".combo-stake");
+  const validate = el.querySelector(".combo-validate");
+  const upd = () => {
+    if (!validate) return;
+    const a = parseInt(stake.value, 10);
+    const ok = a > 0 && a <= window.Betting.getBalance();
+    validate.disabled = !ok;
+    validate.textContent = ok ? `Valider ${a} 💰 · gain ${Math.floor(a * odds)} 💰` : "Valider";
+  };
+  stake?.addEventListener("input", upd);
+  upd();
+
+  validate?.addEventListener("click", () => {
+    const bad = comboSlip.find((l) => {
+      const mm = getAnyMatch(l.matchId);
+      return !mm || (!isTestFlagged(mm) && getMatchStatus(mm).key !== "upcoming");
+    });
+    if (bad) {
+      showToast("error", "Combiné impossible", "Un des matchs a commencé. Retire-le du combiné.");
+      return;
+    }
+    const a = parseInt(stake.value, 10);
+    const r = window.Betting.createCombo(comboSlip, a);
+    if (r.success) {
+      showToast("success", "Combiné placé ! 🎰", `Cote ${r.bet.odds.toFixed(2)} · gain potentiel ${r.bet.potentialWin} 💰`);
+      comboSlip = [];
+      saveComboSlip();
+      window.Betting.renderWalletBalance();
+      syncAfterBetChange();
+      renderBettingPage();
+    } else {
+      showToast("error", "Erreur", r.error);
+    }
+  });
+}
+
+const BADGES = [
+  { id: "first_bet", emoji: "🎲", title: "Premier pari", desc: "Placer ton 1er pari", test: (s) => s.placed >= 1 },
+  { id: "first_win", emoji: "✅", title: "Premier gain", desc: "Gagner un pari", test: (s) => s.won >= 1 },
+  { id: "streak3", emoji: "🔥", title: "Triplé gagnant", desc: "3 paris gagnés d'affilée", test: (s) => s.maxStreak >= 3 },
+  { id: "bigodds", emoji: "💎", title: "Gros coup", desc: "Gagner une cote ≥ 5", test: (s) => s.wonBigOdds },
+  { id: "combo", emoji: "🎰", title: "Combinard", desc: "Gagner un combiné", test: (s) => s.wonCombo },
+  { id: "sniper", emoji: "🎯", title: "Sniper", desc: "Gagner un score exact", test: (s) => s.wonExact },
+  { id: "highroller", emoji: "🏦", title: "Gros parieur", desc: "Placer 10 paris", test: (s) => s.placed >= 10 },
+  { id: "rich", emoji: "🤑", title: "Fortuné", desc: "Atteindre 300 💰", test: (s) => s.balance >= 300 }
+];
+
+function computeBetStats() {
+  const all = window.Betting.getAllBets();
+  const balance = window.Betting.getBalance();
+  const won = all.filter((b) => b.status === "won");
+  const lost = all.filter((b) => b.status === "lost");
+  const settled = all
+    .filter((b) => b.status === "won" || b.status === "lost")
+    .sort((a, b) => new Date(a.createdAt) - new Date(b.createdAt));
+
+  let streak = 0;
+  let maxStreak = 0;
+  settled.forEach((b) => {
+    if (b.status === "won") {
+      streak += 1;
+      maxStreak = Math.max(maxStreak, streak);
+    } else {
+      streak = 0;
+    }
+  });
+
+  // Équipe fétiche : équipe la plus présente dans les matchs pariés.
+  const tally = {};
+  const bump = (t) => {
+    if (t) tally[t] = (tally[t] || 0) + 1;
+  };
+  all.forEach((b) => {
+    if (b.type === "combo") {
+      (b.legs || []).forEach((l) => {
+        const mm = getAnyMatch(l.matchId);
+        if (mm) {
+          bump(mm.h);
+          bump(mm.a);
+        }
+      });
+    } else {
+      const mm = getAnyMatch(b.matchId);
+      if (mm) {
+        bump(mm.h);
+        bump(mm.a);
+      }
+    }
+  });
+  let favTeam = null;
+  let favCount = 0;
+  Object.entries(tally).forEach(([t, c]) => {
+    if (c > favCount) {
+      favCount = c;
+      favTeam = t;
+    }
+  });
+
+  return {
+    balance,
+    placed: all.length,
+    won: won.length,
+    lost: lost.length,
+    pending: all.filter((b) => b.status === "pending").length,
+    winRate: won.length + lost.length ? Math.round((won.length / (won.length + lost.length)) * 100) : null,
+    biggestWin: won.reduce((max, b) => Math.max(max, b.potentialWin), 0),
+    maxStreak,
+    wonBigOdds: won.some((b) => b.odds >= 5),
+    wonCombo: won.some((b) => b.type === "combo"),
+    wonExact: won.some((b) => b.market === "exact"),
+    favTeam
+  };
+}
+
+// Stats perso + badges.
+function renderBettingStats() {
+  const el = document.getElementById("bettingStats");
+  if (!el || !window.Betting) return;
+  const s = computeBetStats();
+
+  const unlocked = BADGES.filter((b) => b.test(s));
+  const unlockedIds = unlocked.map((b) => b.id);
+
+  // Toast pour les nouveaux badges débloqués — seulement si la page Paris est ouverte.
+  const pageActive = document.getElementById("bettingMatches")?.closest(".page")?.classList.contains("active");
+  const seen = window.Betting.getSeenBadges();
+  const fresh = unlocked.filter((b) => !seen.includes(b.id));
+  if (fresh.length && pageActive) {
+    window.Betting.addSeenBadges(unlockedIds);
+    fresh.forEach((b) => showToast("success", `Badge débloqué ${b.emoji}`, b.title));
+  }
+
+  const stat = (label, value) => `<div class="bstat"><span class="bstat-v">${value}</span><span class="bstat-l">${label}</span></div>`;
+
+  el.innerHTML = `
+    <h3 class="block-title">Mes stats</h3>
+    <div class="bstats-row">
+      ${stat("Paris placés", s.placed)}
+      ${stat("Gagnés", s.won)}
+      ${stat("Réussite", s.winRate == null ? "—" : s.winRate + "%")}
+      ${stat("Plus gros gain", s.biggestWin + " 💰")}
+      ${stat("Série max", s.maxStreak)}
+      ${stat("Équipe fétiche", s.favTeam ? teamLabel(s.favTeam) : "—")}
+    </div>
+    <div class="badges-grid">
+      ${BADGES.map(
+        (b) => `
+        <div class="badge ${unlockedIds.includes(b.id) ? "unlocked" : "locked"}" title="${escapeHtml(b.desc)}">
+          <span class="badge-emoji">${b.emoji}</span>
+          <span class="badge-title">${b.title}</span>
+        </div>`
+      ).join("")}
+    </div>
+  `;
+}
+
 function renderBettingPage() {
   if (!window.Betting) return;
 
@@ -1697,6 +2049,10 @@ function renderBettingPage() {
   const pendingBetsEl = document.getElementById("pendingBets");
   const completedBetsEl = document.getElementById("completedBets");
 
+  renderDailyBonus();
+  renderBettingStats();
+  renderComboSlip();
+
   if (balanceEl) balanceEl.textContent = `${window.Betting.getBalance()} 💰`;
   if (winningsEl) winningsEl.textContent = `${window.Betting.getAllBets().reduce((sum, b) => b.status === 'won' ? sum + b.potentialWin : sum, 0)} 💰`;
   if (pendingCountEl) {
@@ -1706,29 +2062,52 @@ function renderBettingPage() {
     if (cardEl) {
       cardEl.classList.toggle("clickable", pendingCount > 0);
       cardEl.title = pendingCount > 0 ? "Voir mes paris en cours" : "";
+      let cta = cardEl.querySelector(".wallet-card-cta");
+      if (pendingCount > 0) {
+        if (!cta) {
+          cta = document.createElement("span");
+          cta.className = "wallet-card-cta";
+          cardEl.appendChild(cta);
+        }
+        cta.textContent = "Cliquer pour voir ↓";
+      } else if (cta) {
+        cta.remove();
+      }
       cardEl.onclick = pendingCount > 0
         ? () => document.getElementById("pendingBets")?.scrollIntoView({ behavior: "smooth", block: "start" })
         : null;
     }
   }
 
-  // Afficher les filtres (cachés si paris en maintenance pour un visiteur)
-  if (bettingFiltersEl && bettingMaintenance && !canEditStandings()) {
+  // Afficher les filtres (filtres par journée cachés si paris en maintenance
+  // pour un visiteur, mais on garde le raccourci vers l'historique).
+  if (bettingFiltersEl) {
     bettingFiltersEl.innerHTML = "";
-  } else if (bettingFiltersEl) {
-    bettingFiltersEl.innerHTML = "";
-    const filters = ["all", "J1", "J2", "J3"];
-    filters.forEach(f => {
-      const b = document.createElement("button");
-      b.type = "button";
-      b.className = "chip" + (bettingFilter === f ? " active" : "");
-      b.textContent = f === "all" ? "Tous" : f;
-      b.onclick = () => {
-        bettingFilter = f;
-        renderBettingPage();
-      };
-      bettingFiltersEl.appendChild(b);
-    });
+    const showDayFilters = !(bettingMaintenance && !canEditStandings());
+    if (showDayFilters) {
+      const filters = ["all", "J1", "J2", "J3"];
+      filters.forEach(f => {
+        const b = document.createElement("button");
+        b.type = "button";
+        b.className = "chip" + (bettingFilter === f ? " active" : "");
+        b.textContent = f === "all" ? "Tous" : f;
+        b.onclick = () => {
+          bettingFilter = f;
+          renderBettingPage();
+        };
+        bettingFiltersEl.appendChild(b);
+      });
+    }
+    if (window.Betting.getCompletedBets().length) {
+      const hist = document.createElement("button");
+      hist.type = "button";
+      hist.className = "chip chip-jump";
+      hist.innerHTML = "📜 Mon historique ↓";
+      hist.title = "Aller à l'historique de mes paris";
+      hist.onclick = () =>
+        document.getElementById("completedBets")?.scrollIntoView({ behavior: "smooth", block: "start" });
+      bettingFiltersEl.appendChild(hist);
+    }
   }
 
   // Afficher les matchs disponibles pour les paris
@@ -1822,30 +2201,78 @@ function renderBettingPage() {
       pendingBetsEl.innerHTML = "<p class='empty-msg'>Aucun pari en cours.</p>";
     } else {
       pendingBets.forEach(bet => {
-        const match = getAnyMatch(bet.matchId);
-        if (!match) return;
+        const isCombo = bet.type === "combo";
+        const match = isCombo ? null : getAnyMatch(bet.matchId);
+        if (!isCombo && !match) return;
         const card = document.createElement("div");
         card.className = "bet-card";
-        const pick = bet.label || (bet.betType === 'home' ? match.h : bet.betType === 'away' ? match.a : 'Nul');
-        const cancellable = isTestFlagged(match) || getMatchStatus(match).key === "upcoming";
-        card.innerHTML = `
-          <div class="bet-header">
-            <span class="bet-status pending">En attente</span>
-            ${cancellable
-              ? '<button type="button" class="bet-cancel">↩ Retirer ma mise</button>'
-              : '<span class="bet-locked">🔒 Verrouillé</span>'}
-          </div>
-          <div class="bet-match">${teamLabel(match.h)} vs ${teamLabel(match.a)}</div>
-          <div class="bet-details">
-            <span>Pari : ${escapeHtml(pick)}</span>
-            <span class="bet-odds">Cote : ${bet.odds.toFixed(2)}</span>
-          </div>
-          <div class="bet-details">
-            <span class="bet-amount">Mise : ${bet.amount} 💰</span>
-            <span class="bet-potential">Gain : ${bet.potentialWin} 💰</span>
-          </div>
-        `;
+        const cancellable = isCombo
+          ? bet.legs.every((l) => {
+              const mm = getAnyMatch(l.matchId);
+              return mm && (isTestFlagged(mm) || getMatchStatus(mm).key === "upcoming");
+            })
+          : isTestFlagged(match) || getMatchStatus(match).key === "upcoming";
+        const cancelHtml = cancellable
+          ? '<button type="button" class="bet-cancel">↩ Retirer ma mise</button>'
+          : '<span class="bet-locked">🔒 Verrouillé</span>';
+
+        if (isCombo) {
+          card.classList.add("combo-bet");
+          card.innerHTML = `
+            <div class="bet-header">
+              <span class="bet-status pending">En attente</span>
+              ${cancelHtml}
+            </div>
+            <div class="bet-match">🎰 Combiné · ${bet.legs.length} sélections</div>
+            <div class="combo-bet-legs">
+              ${bet.legs.map(comboLegHtml).join("")}
+            </div>
+            <div class="bet-details">
+              <span class="bet-amount">Mise : ${bet.amount} 💰</span>
+              <span class="bet-odds">Cote : ${bet.odds.toFixed(2)}</span>
+            </div>
+            <div class="bet-details">
+              <span class="bet-potential">Gain : ${bet.potentialWin} 💰</span>
+            </div>
+          `;
+        } else {
+          const pick = bet.label || (bet.betType === 'home' ? match.h : bet.betType === 'away' ? match.a : 'Nul');
+          card.innerHTML = `
+            <div class="bet-header">
+              <span class="bet-status pending">En attente</span>
+              ${cancelHtml}
+            </div>
+            <div class="bet-match">${teamLabel(match.h)} vs ${teamLabel(match.a)}</div>
+            <div class="bet-details">
+              <span>Pari : ${escapeHtml(pick)}</span>
+              <span class="bet-odds">Cote : ${bet.odds.toFixed(2)}</span>
+            </div>
+            <div class="bet-details">
+              <span class="bet-amount">Mise : ${bet.amount} 💰</span>
+              <span class="bet-potential">Gain : ${bet.potentialWin} 💰</span>
+            </div>
+          `;
+        }
         card.querySelector(".bet-cancel")?.addEventListener("click", () => {
+          if (bet.type === "combo") {
+            const stillOk = bet.legs.every((l) => {
+              const mm = getAnyMatch(l.matchId);
+              return mm && (isTestFlagged(mm) || getMatchStatus(mm).key === "upcoming");
+            });
+            if (!stillOk) {
+              showToast("error", "Trop tard", "Un match du combiné a commencé.");
+              renderBettingPage();
+              return;
+            }
+            const r = window.Betting.cancelBet(bet.id);
+            if (r.success) {
+              showToast("info", "Combiné retiré", `${r.amount} 💰 récupérés.`);
+              window.Betting.renderWalletBalance();
+              syncAfterBetChange();
+              renderBettingPage();
+            }
+            return;
+          }
           const m = getAnyMatch(bet.matchId);
           // Re-vérifie au moment du clic : le match a pu démarrer entre-temps.
           if (!m || (!isTestFlagged(m) && getMatchStatus(m).key !== "upcoming")) {
@@ -1876,25 +2303,45 @@ function renderBettingPage() {
       completedBetsEl.innerHTML = "<p class='empty-msg'>Aucun pari terminé.</p>";
     } else {
       completedBets.sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt)).forEach(bet => {
-        const match = getAnyMatch(bet.matchId);
-        if (!match) return;
+        const isCombo = bet.type === "combo";
+        const match = isCombo ? null : getAnyMatch(bet.matchId);
+        if (!isCombo && !match) return;
         const card = document.createElement("div");
         card.className = `bet-card ${bet.status}`;
-        const pick = bet.label || (bet.betType === 'home' ? match.h : bet.betType === 'away' ? match.a : 'Nul');
-        card.innerHTML = `
-          <div class="bet-header">
-            <span class="bet-status ${bet.status}">${bet.status === 'won' ? 'Gagné' : 'Perdu'}</span>
-          </div>
-          <div class="bet-match">${teamLabel(match.h)} vs ${teamLabel(match.a)}</div>
-          <div class="bet-details">
-            <span>Pari : ${escapeHtml(pick)}</span>
-            <span class="bet-odds">Cote : ${bet.odds.toFixed(2)}</span>
-          </div>
-          <div class="bet-details">
-            <span class="bet-amount">Mise : ${bet.amount} 💰</span>
-            <span class="${bet.status === 'won' ? 'bet-potential' : ''}">${bet.status === 'won' ? 'Gain : ' + bet.potentialWin + ' 💰' : 'Perdu'}</span>
-          </div>
-        `;
+        const statusLabel = bet.status === 'won' ? 'Gagné' : 'Perdu';
+        const gainCell = `<span class="${bet.status === 'won' ? 'bet-potential' : ''}">${bet.status === 'won' ? 'Gain : ' + bet.potentialWin + ' 💰' : 'Perdu'}</span>`;
+
+        if (isCombo) {
+          card.classList.add("combo-bet");
+          card.innerHTML = `
+            <div class="bet-header"><span class="bet-status ${bet.status}">${statusLabel}</span></div>
+            <div class="bet-match">🎰 Combiné · ${bet.legs.length} sélections</div>
+            <div class="combo-bet-legs">
+              ${bet.legs.map(comboLegHtml).join("")}
+            </div>
+            <div class="bet-details">
+              <span class="bet-amount">Mise : ${bet.amount} 💰</span>
+              <span class="bet-odds">Cote : ${bet.odds.toFixed(2)}</span>
+            </div>
+            <div class="bet-details">${gainCell}</div>
+          `;
+        } else {
+          const pick = bet.label || (bet.betType === 'home' ? match.h : bet.betType === 'away' ? match.a : 'Nul');
+          card.innerHTML = `
+            <div class="bet-header">
+              <span class="bet-status ${bet.status}">${statusLabel}</span>
+            </div>
+            <div class="bet-match">${teamLabel(match.h)} vs ${teamLabel(match.a)}</div>
+            <div class="bet-details">
+              <span>Pari : ${escapeHtml(pick)}</span>
+              <span class="bet-odds">Cote : ${bet.odds.toFixed(2)}</span>
+            </div>
+            <div class="bet-details">
+              <span class="bet-amount">Mise : ${bet.amount} 💰</span>
+              ${gainCell}
+            </div>
+          `;
+        }
         completedBetsEl.appendChild(card);
       });
     }

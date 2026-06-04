@@ -867,6 +867,18 @@ h3,
   background: var(--surface2);
 }
 
+.chip-jump {
+  margin-left: auto;
+  color: var(--gold);
+  border-color: color-mix(in srgb, var(--gold) 45%, var(--border));
+  background: color-mix(in srgb, var(--gold) 10%, transparent);
+}
+
+.chip-jump:hover {
+  border-color: var(--gold);
+  background: color-mix(in srgb, var(--gold) 18%, transparent);
+}
+
 .group-tabs {
   display: flex;
   flex-wrap: wrap;
@@ -1243,16 +1255,28 @@ h3,
 .wallet-card.clickable {
   cursor: pointer;
   transition: all 0.15s;
+  border-color: color-mix(in srgb, var(--gold) 45%, var(--border));
 }
 
 .wallet-card.clickable:hover {
   border-color: var(--gold);
   transform: translateY(-2px);
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.22);
 }
 
-.wallet-card.clickable::after {
-  content: " ↓";
+.wallet-card-cta {
+  display: inline-block;
+  margin-top: 6px;
+  font-size: 0.72rem;
+  font-weight: 700;
   color: var(--gold);
+  background: color-mix(in srgb, var(--gold) 14%, transparent);
+  border-radius: 999px;
+  padding: 2px 9px;
+}
+
+.wallet-card.clickable:hover .wallet-card-cta {
+  background: color-mix(in srgb, var(--gold) 22%, transparent);
 }
 
 .bets-hint {
@@ -1449,6 +1473,286 @@ h3,
 
 .match-modal-card .welcome-cta {
   margin-top: 16px;
+}
+
+/* Bonus quotidien */
+.daily-bonus-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  width: 100%;
+  margin-bottom: 14px;
+  padding: 14px 16px;
+  border: none;
+  border-radius: 14px;
+  background: linear-gradient(135deg, #f5c542, #e0992a);
+  color: #1a1205;
+  font-size: 1rem;
+  font-weight: 800;
+  cursor: pointer;
+  box-shadow: 0 4px 16px rgba(245, 197, 66, 0.3);
+  transition: transform 0.12s ease;
+}
+
+.daily-bonus-btn:hover {
+  transform: translateY(-2px);
+}
+
+/* Stats perso */
+.bstats-row {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 8px;
+  margin-bottom: 14px;
+}
+
+.bstat {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+  background: var(--surface2);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 10px 6px;
+  text-align: center;
+}
+
+.bstat-v {
+  font-size: 1.05rem;
+  font-weight: 800;
+  color: var(--gold);
+}
+
+.bstat-l {
+  font-size: 0.72rem;
+  color: var(--muted);
+}
+
+/* Badges */
+.badges-grid {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 8px;
+  margin-bottom: 18px;
+}
+
+.badge {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  background: var(--surface2);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 10px 4px;
+  text-align: center;
+}
+
+.badge-emoji {
+  font-size: 1.5rem;
+}
+
+.badge-title {
+  font-size: 0.68rem;
+  font-weight: 700;
+  color: var(--muted);
+}
+
+.badge.unlocked {
+  border-color: var(--gold);
+  background: rgba(245, 197, 66, 0.08);
+}
+
+.badge.unlocked .badge-title {
+  color: var(--text);
+}
+
+.badge.locked {
+  opacity: 0.4;
+  filter: grayscale(1);
+}
+
+/* Bouton "Ajouter au combiné" dans la sélection */
+.betting-selection-info {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.combo-add-btn {
+  flex-shrink: 0;
+  border: 1px solid var(--gold);
+  background: transparent;
+  color: var(--gold);
+  font-weight: 700;
+  font-size: 0.82rem;
+  border-radius: 8px;
+  padding: 5px 10px;
+  cursor: pointer;
+}
+
+.combo-add-btn:hover {
+  background: rgba(245, 197, 66, 0.12);
+}
+
+/* Panier de combiné */
+.combo-slip {
+  background: var(--surface);
+  border: 1px solid var(--gold);
+  border-radius: 14px;
+  padding: 14px 16px;
+  margin: 14px 0;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.28);
+}
+
+.combo-head {
+  font-weight: 800;
+  margin-bottom: 10px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.combo-count {
+  font-size: 0.78rem;
+  font-weight: 600;
+  color: var(--muted);
+}
+
+.combo-legs {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-bottom: 10px;
+}
+
+.combo-leg {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  background: var(--surface2);
+  border-radius: 8px;
+  padding: 8px 10px;
+}
+
+.combo-leg-info {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.combo-leg-match {
+  font-size: 0.78rem;
+  color: var(--muted);
+}
+
+.combo-leg-pick {
+  font-weight: 700;
+  font-size: 0.9rem;
+}
+
+.combo-leg-del {
+  flex-shrink: 0;
+  border: none;
+  background: transparent;
+  color: var(--muted);
+  font-size: 1rem;
+  cursor: pointer;
+  padding: 4px 6px;
+}
+
+.combo-leg-del:hover {
+  color: var(--live);
+}
+
+.combo-total {
+  font-size: 1rem;
+  margin-bottom: 10px;
+}
+
+.combo-total strong {
+  color: var(--gold);
+  font-size: 1.15rem;
+}
+
+.combo-hint {
+  font-size: 0.82rem;
+  color: var(--muted);
+  margin: 0 0 10px;
+}
+
+.combo-stake-row {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.combo-stake {
+  flex: 1;
+}
+
+/* Combiné dans les listes de paris */
+.combo-bet-legs {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin: 8px 0;
+}
+
+.combo-bet-leg {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  font-size: 0.82rem;
+  color: var(--muted);
+  border-left: 3px solid var(--border);
+  padding: 3px 0 3px 8px;
+}
+
+.combo-bet-leg .leg-state {
+  flex: 0 0 auto;
+  line-height: 1.2;
+}
+
+.combo-bet-leg .leg-text {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.combo-bet-leg .leg-pick {
+  white-space: nowrap;
+}
+
+.combo-bet-leg.leg-won {
+  border-left-color: var(--ok);
+  color: var(--ok);
+}
+
+.combo-bet-leg.leg-lost {
+  border-left-color: var(--live);
+  color: var(--live);
+}
+
+.combo-bet-leg.leg-pending {
+  border-left-color: var(--border);
+}
+
+@media (max-width: 480px) {
+  .badges-grid {
+    grid-template-columns: repeat(3, 1fr);
+  }
+  .bstats-row {
+    grid-template-columns: repeat(2, 1fr);
+  }
 }
 
 .wallet-label {

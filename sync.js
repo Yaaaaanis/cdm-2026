@@ -216,7 +216,10 @@ async function refreshStandingsFromCloud() {
     if (typeof resolveDueBets === "function") resolveDueBets();
     render();
     renderGroups();
-    if (typeof renderBettingPage === "function") renderBettingPage();
+    if (typeof renderBettingPage === "function") {
+      const bp = document.getElementById("bettingMatches");
+      if (bp && bp.closest(".page") && bp.closest(".page").classList.contains("active")) renderBettingPage();
+    }
   } catch (_) {
     /* garde les données locales */
   }
