@@ -77,10 +77,20 @@
   </p>
 </section>
 
-<section class="page">
-  <h2>📅 Matchs du jour</h2>
+<section class="page" id="todayPage">
+  <h2>📅 Aujourd'hui</h2>
   <p id="todayLabel" class="section-hint"></p>
-  <div id="todayMatches" class="match-list"></div>
+  <div id="todayStats" class="today-stats"></div>
+  <div id="todayBonus"></div>
+  <div id="todayBetsBlock" class="today-block hidden">
+    <h3 class="block-title">💰 Mes paris du jour</h3>
+    <div id="todayBets" class="bets-list today-bets-list"></div>
+    <button type="button" class="link-btn today-goto-bets" data-page="12">Voir tous mes paris →</button>
+  </div>
+  <div id="todayMatchesBlock" class="today-block">
+    <h3 class="block-title">⚽ Matchs</h3>
+    <div id="todayMatchSections"></div>
+  </div>
 </section>
 
 <section class="page">

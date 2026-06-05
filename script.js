@@ -339,6 +339,7 @@ function setScorers(m, names) {
   if (!s) return;
   scores[m.id] = { ...s, scorers: Array.from(new Set(names)) };
   persistData();
+  if (!canSettleMatchBets(m)) return;
   const win = settleMatchBets(m, { score: getScore(m), scorers: getScorers(m) });
   renderBettingPage();
   if (win > 0) showToast("success", "Paris buteur gagnés", `+${win} 💰 ajoutés au solde.`);
@@ -353,6 +354,15 @@ function hasScore(m) {
   return s !== null && !Number.isNaN(s.h) && !Number.isNaN(s.a);
 }
 
+function isMatchFinalized(m) {
+  return !!(scores[m.id] && scores[m.id].final === true);
+}
+
+function canSettleMatchBets(m) {
+  if (isTestFlagged(m)) return true;
+  return getMatchStatus(m).key === "done" || isMatchFinalized(m);
+}
+
 function recalcStandingsFromScores() {
   if (!Object.keys(scores).length) return;
 
@@ -365,6 +375,8 @@ function recalcStandingsFromScores() {
   matches.forEach((m) => {
     const s = getScore(m);
     if (!s || Number.isNaN(s.h) || Number.isNaN(s.a)) return;
+    // Ne compte que les matchs terminés ou validés par l'admin.
+    if (getMatchStatus(m).key !== "done" && !isMatchFinalized(m)) return;
     const g = m.g;
     if (s.h > s.a) {
       standings[g][m.h] = (standings[g][m.h] ?? 0) + 3;
@@ -389,13 +401,17 @@ function saveMatchScore(m, h, a) {
     }
     const prev = scores[m.id];
     scores[m.id] = { h: hi, a: ai };
-    // Conserve les buteurs déjà saisis pour ce match.
+    // Conserve les buteurs ; un changement de score annule la validation « fin du match ».
     if (prev && Array.isArray(prev.scorers)) scores[m.id].scorers = prev.scorers;
+    if (prev && prev.final && prev.h === hi && prev.a === ai) scores[m.id].final = true;
   }
   recalcStandingsFromScores();
   persistData();
-  // Résoudre les paris pour ce match (score authoritatif saisi par l'admin).
-  const winnings = h === "" && a === "" ? 0 : settleMatchBets(m, { score: getScore(m), scorers: getScorers(m) });
+  // Résout les paris seulement si le match est terminé (ou en mode test).
+  const winnings =
+    h === "" || a === "" || !canSettleMatchBets(m)
+      ? 0
+      : settleMatchBets(m, { score: getScore(m), scorers: getScorers(m) });
   render();
   renderGroups();
   if (window.Betting) window.Betting.renderWalletBalance();
@@ -410,6 +426,7 @@ function saveMatchScore(m, h, a) {
 // encore saisis alors qu'il y a eu des buts) restent en attente.
 function settleMatchBets(m, ctx) {
   if (!window.Betting || !window.Betting.resolveBetWith) return 0;
+  if (!canSettleMatchBets(m)) return 0;
   if (!ctx) ctx = betContext(m);
   if (!ctx.score) return 0;
   const pending = window.Betting.getPendingBets().filter((b) => b.matchId === m.id);
@@ -429,7 +446,7 @@ function settleMatchBets(m, ctx) {
     (b) => b.type === "combo" && b.legs.some((l) => l.matchId === m.id)
   );
   combos.forEach((bet) => {
-    const r = window.Betting.resolveComboWith(bet.id, settleCtx);
+    const r = window.Betting.resolveComboWith(bet.id, resolvableCtx);
     if (r.success) {
       changed = true;
       if (r.won) winnings += r.amount;
@@ -477,6 +494,27 @@ function setTestScorers(m, names) {
   if (win > 0) showToast("success", "Paris buteur gagnés", `+${win} 💰 ajoutés au solde.`);
 }
 
+function finalizeMatch(m) {
+  if (!hasScore(m)) {
+    showToast("error", "Score requis", "Enregistre d'abord le score avec OK, puis clique « Fin du match ».");
+    return;
+  }
+  if (isMatchFinalized(m)) return;
+  scores[m.id] = { ...scores[m.id], final: true };
+  recalcStandingsFromScores();
+  persistData();
+  const winnings = settleMatchBets(m, { score: getScore(m), scorers: getScorers(m) });
+  render();
+  renderGroups();
+  if (window.Betting) window.Betting.renderWalletBalance();
+  renderBettingPage();
+  if (winnings > 0) {
+    showToast("success", "Match terminé", `Score validé · +${winnings} 💰 de gains résolus.`);
+  } else {
+    showToast("success", "Match terminé", "Score validé · les paris sont résolus (buteurs : saisis-les si besoin).");
+  }
+}
+
 function clearMatchScore(m) {
   delete scores[m.id];
   recalcStandingsFromScores();
@@ -492,15 +530,18 @@ function scoreBlockHtml(m) {
   if (admin) {
     const hv = s ? s.h : "";
     const av = s ? s.a : "";
+    const finalized = isMatchFinalized(m);
     return `
       <div class="score-row score-admin">
-        <label class="score-label">Score</label>
-        <input type="number" min="0" max="15" class="score-in" data-side="h" value="${hv}" placeholder="0" aria-label="Buts ${m.h}">
+        <label class="score-label">Score${finalized ? " · validé ✓" : ""}</label>
+        <input type="number" min="0" max="15" class="score-in" data-side="h" value="${hv}" placeholder="0" aria-label="Buts ${m.h}"${finalized ? " readonly" : ""}>
         <span class="score-sep">–</span>
-        <input type="number" min="0" max="15" class="score-in" data-side="a" value="${av}" placeholder="0" aria-label="Buts ${m.a}">
-        <button type="button" class="score-save">OK</button>
-        ${s ? '<button type="button" class="score-clear" title="Effacer">✕</button>' : ""}
+        <input type="number" min="0" max="15" class="score-in" data-side="a" value="${av}" placeholder="0" aria-label="Buts ${m.a}"${finalized ? " readonly" : ""}>
+        ${finalized ? "" : '<button type="button" class="score-save">OK</button>'}
+        ${s && !finalized ? '<button type="button" class="score-finalize">🏁 Fin du match</button>' : ""}
+        ${s ? '<button type="button" class="score-clear" title="Effacer le score">✕</button>' : ""}
       </div>
+      ${!finalized && s ? '<p class="score-admin-hint">OK = enregistrer le score provisoire · 🏁 Fin du match = valider définitivement et résoudre les paris.</p>' : ""}
       ${scorersEditorHtml(m)}
     `;
   }
@@ -566,24 +607,26 @@ function bindScoreControls(card, m) {
   }
 
   const saveBtn = card.querySelector(".score-save");
-  if (!saveBtn) return;
-
-  saveBtn.addEventListener("click", () => {
+  saveBtn?.addEventListener("click", () => {
     const h = card.querySelector('.score-in[data-side="h"]')?.value ?? "";
     const a = card.querySelector('.score-in[data-side="a"]')?.value ?? "";
     saveMatchScore(m, h, a);
   });
+
+  card.querySelector(".score-finalize")?.addEventListener("click", () => finalizeMatch(m));
 
   card.querySelector(".score-clear")?.addEventListener("click", () => {
     clearMatchScore(m);
     showToast("info", "Info", "Score effacé.");
   });
 
-  card.querySelectorAll(".score-in").forEach((input) => {
-    input.addEventListener("keydown", (e) => {
-      if (e.key === "Enter") saveBtn.click();
+  if (saveBtn) {
+    card.querySelectorAll(".score-in").forEach((input) => {
+      input.addEventListener("keydown", (e) => {
+        if (e.key === "Enter") saveBtn.click();
+      });
     });
-  });
+  }
 }
 
 function bindBettingControls(card, m) {
@@ -965,7 +1008,71 @@ function todayKey() {
   return `${n.getFullYear()}-${String(n.getMonth() + 1).padStart(2, "0")}-${String(n.getDate()).padStart(2, "0")}`;
 }
 
+function isMatchToday(m) {
+  return !!(m && m.date === todayKey());
+}
+
+function getTodayAllMatches() {
+  const key = todayKey();
+  const group = matches.filter((m) => m.date === key);
+  const ko = KNOCKOUT.filter((k) => k.date === key).map((k) => ({
+    ...k,
+    id: `ko-${k.phase}-${k.date}-${k.t}`,
+    _knockout: true
+  }));
+  return sortMatches([...group, ...ko]);
+}
+
+function betInvolvesToday(bet) {
+  if (!bet || bet.status !== "pending") return false;
+  if (bet.type === "combo") {
+    return bet.legs.some((l) => isMatchToday(getAnyMatch(l.matchId)));
+  }
+  return isMatchToday(getAnyMatch(bet.matchId));
+}
+
+function getTodayPendingBets() {
+  if (!window.Betting) return [];
+  return window.Betting.getPendingBets().filter(betInvolvesToday);
+}
+
+function todayBetCardHtml(bet) {
+  const isCombo = bet.type === "combo";
+  if (isCombo) {
+    const legs = bet.legs
+      .map((l) => {
+        const mm = getAnyMatch(l.matchId);
+        const today = isMatchToday(mm);
+        return `<div class="today-bet-leg${today ? " today-leg" : ""}">${today ? "📅 " : ""}${escapeHtml(l.matchLabel)} · ${escapeHtml(l.label)}</div>`;
+      })
+      .join("");
+    return `
+      <div class="bet-card combo-bet today-bet-card">
+        <div class="bet-header"><span class="bet-status pending">Combiné</span><span class="bet-odds">${bet.odds.toFixed(2)}</span></div>
+        <div class="combo-bet-legs">${legs}</div>
+        <div class="bet-details"><span class="bet-amount">${bet.amount} 💰</span><span class="bet-potential">→ ${bet.potentialWin} 💰</span></div>
+      </div>`;
+  }
+  const match = getAnyMatch(bet.matchId);
+  if (!match) return "";
+  const pick = bet.label || (bet.betType === "home" ? match.h : bet.betType === "away" ? match.a : "Nul");
+  const st = getMatchStatus(match);
+  return `
+    <div class="bet-card today-bet-card">
+      <div class="bet-header">
+        <span class="bet-status pending">${st.label}</span>
+        <span class="bet-odds">${bet.odds.toFixed(2)}</span>
+      </div>
+      <div class="bet-match">${teamLabel(match.h)} vs ${teamLabel(match.a)} · ${match.t}</div>
+      <div class="bet-details">
+        <span>${escapeHtml(pick)}</span>
+        <span class="bet-potential">${bet.amount} 💰 → ${bet.potentialWin} 💰</span>
+      </div>
+    </div>`;
+}
+
 function getMatchStatus(m) {
+  if (isMatchFinalized(m)) return { key: "done", label: "Terminé" };
   const start = getDateObj(m);
   const end = new Date(start.getTime() + MATCH_MS);
   const now = new Date();
@@ -1900,12 +2007,19 @@ function renderQuickNav() {
 
 function renderToday() {
   const label = document.getElementById("todayLabel");
-  const box = document.getElementById("todayMatches");
-  if (!label || !box) return;
-  box.innerHTML = "";
+  const statsEl = document.getElementById("todayStats");
+  const bonusEl = document.getElementById("todayBonus");
+  const betsBlock = document.getElementById("todayBetsBlock");
+  const betsEl = document.getElementById("todayBets");
+  const sectionsEl = document.getElementById("todayMatchSections");
+  if (!label || !sectionsEl) return;
 
   const key = todayKey();
-  const today = sortMatches(matches.filter((m) => m.date === key));
+  const allToday = getTodayAllMatches();
+  const live = allToday.filter((m) => getMatchStatus(m).key === "live");
+  const upcoming = allToday.filter((m) => getMatchStatus(m).key === "upcoming");
+  const done = allToday.filter((m) => getMatchStatus(m).key === "done");
+  const todayBets = getTodayPendingBets();
 
   label.textContent = new Date().toLocaleDateString("fr-FR", {
     weekday: "long",
@@ -1914,22 +2028,78 @@ function renderToday() {
     year: "numeric"
   });
 
-  if (!today.length) {
-    const next = sortMatches(
-      matches.filter((m) => getMatchStatus(m).key === "upcoming")
-    )[0];
-    box.innerHTML = "<p class='empty-msg'>Aucun match aujourd'hui.</p>";
+  if (statsEl) {
+    statsEl.innerHTML = `
+      <div class="today-stat"><span class="today-stat-n">${allToday.length}</span><span class="today-stat-l">match${allToday.length !== 1 ? "s" : ""}</span></div>
+      <div class="today-stat live"><span class="today-stat-n">${live.length}</span><span class="today-stat-l">en direct</span></div>
+      <div class="today-stat"><span class="today-stat-n">${upcoming.length}</span><span class="today-stat-l">à venir</span></div>
+      <div class="today-stat"><span class="today-stat-n">${todayBets.length}</span><span class="today-stat-l">pari${todayBets.length !== 1 ? "s" : ""}</span></div>
+    `;
+  }
+
+  if (bonusEl && window.Betting) {
+    if (window.Betting.canClaimDaily()) {
+      bonusEl.innerHTML = `
+        <div class="today-bonus-banner">
+          <span>🎁 Bonus quotidien disponible — +20 💰</span>
+          <button type="button" class="admin-btn" id="todayClaimBonus">Réclamer</button>
+        </div>`;
+      bonusEl.querySelector("#todayClaimBonus")?.addEventListener("click", () => {
+        const r = window.Betting.claimDailyBonus();
+        if (r.claimed) {
+          showToast("success", "Bonus réclamé !", `+${r.amount} 💰 ajoutés à ton solde.`);
+          window.Betting.renderWalletBalance();
+          syncAfterBetChange();
+          renderToday();
+          renderBettingPage();
+        }
+      });
+    } else {
+      bonusEl.innerHTML = "";
+    }
+  }
+
+  if (betsBlock && betsEl) {
+    if (todayBets.length) {
+      betsBlock.classList.remove("hidden");
+      betsEl.innerHTML = todayBets.map(todayBetCardHtml).join("");
+      betsBlock.querySelector(".today-goto-bets")?.addEventListener("click", () => show(12));
+    } else {
+      betsBlock.classList.add("hidden");
+      betsEl.innerHTML = "";
+    }
+  }
+
+  sectionsEl.innerHTML = "";
+
+  const appendSection = (title, items, extraClass = "") => {
+    if (!items.length) return;
+    const sec = document.createElement("div");
+    sec.className = `today-match-section ${extraClass}`.trim();
+    sec.innerHTML = `<h4 class="today-section-title">${title}</h4>`;
+    const list = document.createElement("div");
+    list.className = "match-list";
+    items.forEach((m) => list.appendChild(createCard(m, { knockout: !!m._knockout })));
+    sec.appendChild(list);
+    sectionsEl.appendChild(sec);
+  };
+
+  if (!allToday.length) {
+    const next = sortMatches(matches.filter((m) => getMatchStatus(m).key === "upcoming"))[0];
+    sectionsEl.innerHTML = `<p class="empty-msg">Aucun match prévu aujourd'hui.</p>`;
     if (next) {
-      const p = document.createElement("p");
-      p.className = "section-hint";
-      p.textContent = "Prochain match :";
-      box.appendChild(p);
-      box.appendChild(createCard(next));
+      const hint = document.createElement("p");
+      hint.className = "section-hint";
+      hint.textContent = "Prochain match :";
+      sectionsEl.appendChild(hint);
+      sectionsEl.appendChild(createCard(next));
     }
     return;
   }
 
-  today.forEach((m) => box.appendChild(createCard(m)));
+  appendSection("🔴 En direct", live, "section-live");
+  appendSection("⏳ À venir", upcoming);
+  appendSection("✅ Terminés", done, "section-done");
 }
 
 function renderFavorites() {
@@ -2027,16 +2197,8 @@ function resolvableCtx(matchId) {
   if (!m) return null;
   const ctx = betContext(m);
   if (!ctx.score) return null;
-  if (!ctx.isTest && getMatchStatus(m).key !== "done") return null;
+  if (!ctx.isTest && getMatchStatus(m).key !== "done" && !isMatchFinalized(m)) return null;
   return ctx;
-}
-
-// Contexte dès qu'un score est saisi (utilisé quand l'admin valide un score).
-function settleCtx(matchId) {
-  const m = getAnyMatch(matchId);
-  if (!m) return null;
-  const ctx = betContext(m);
-  return ctx.score ? ctx : null;
 }
 
 // Bonus de connexion quotidien.
@@ -3235,6 +3397,7 @@ function show(i) {
   document.getElementById("navMoreBtn")?.classList.toggle("active", [6, 7, 8, 10, 11].includes(i));
   document.querySelector(".logo-btn")?.classList.toggle("active", i === 0);
   window.scrollTo({ top: 0, behavior: "smooth" });
+  if (i === 1) renderToday();
   if (i === 9) renderGroups();
   if (i === 11) document.getElementById("search")?.focus();
   if (i === 12) {
@@ -3563,6 +3726,7 @@ function scheduleMatchRefresh() {
 
   matchRefreshTimer = setTimeout(() => {
     render();
+    resolveDueBets();
     maybeRefreshBetting();
     scheduleMatchRefresh();
   }, delay);
