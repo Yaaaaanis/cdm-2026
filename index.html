@@ -133,7 +133,15 @@
 
 <section class="page">
   <h2>🏆 Phases finales</h2>
-  <p class="section-hint">16es → finale · affiches selon le tirage FIFA</p>
+  <p class="section-hint">16es → finale · Prédis ton parcours complet (sauvegardé sur ton compte si tu es connecté).</p>
+  <h3 class="block-title">Étape 1 — Tes poules</h3>
+  <p class="section-hint">Pour chaque groupe, choisis qui finit 1er, 2e et 3e. C'est ton jeu de prédiction, indépendant des vrais scores.</p>
+  <div id="bracketGroups" class="bracket-groups"></div>
+  <div id="bracketThirdsWrap" class="bracket-thirds-wrap hidden">
+    <h3 class="block-title">Étape 2 — Meilleurs 3es</h3>
+    <p class="section-hint">Classe les 12 troisièmes <strong>du meilleur (en haut) au moins bon</strong> (↑ ↓). Les <strong>8 premiers</strong> sont qualifiés pour les 16es.</p>
+    <ol id="bracketThirds" class="bracket-thirds-list"></ol>
+  </div>
   <div id="bracketBuilder" class="bracket-builder"></div>
   <h3 class="block-title">Calendrier officiel</h3>
   <div id="knockoutFilters" class="chip-row"></div>
@@ -147,7 +155,7 @@
 </section>
 
 <section class="page">
-  <h2>💰 Mes Paris</h2>
+  <h2>💰 Mes Paris <button type="button" id="reopenBettingIntro" class="link-btn betting-help-btn">❓ Comment ça marche ?</button></h2>
   <p class="section-hint betting-top-hint">💡 Changé d'avis ? Tant que le match n'a pas commencé, va dans <strong>« Paris en cours »</strong> (plus bas sur cette page) et clique <strong>« ↩ Retirer ma mise »</strong> sur le pari concerné : tes pièces reviennent aussitôt dans ton solde. Après le coup d'envoi, le pari est verrouillé.</p>
   <div class="wallet-info">
     <div class="wallet-card">
@@ -217,6 +225,27 @@
     </ul>
     <p class="welcome-tip">💡 Astuce : ajoute l'app à ton écran d'accueil pour un accès rapide.</p>
     <button type="button" class="welcome-cta" data-welcome-dismiss>C'est parti ! ⚽</button>
+  </div>
+</div>
+
+<div id="bettingIntroModal" class="welcome-modal hidden" role="dialog" aria-modal="true" aria-labelledby="bettingIntroTitle">
+  <div class="welcome-overlay" data-betintro-dismiss></div>
+  <div class="welcome-card">
+    <button type="button" class="welcome-close" data-betintro-dismiss aria-label="Fermer">✕</button>
+    <div class="welcome-emoji">💰</div>
+    <h2 id="bettingIntroTitle">Bienvenue dans les Paris !</h2>
+    <p class="welcome-intro">Mise de la monnaie virtuelle sur les matchs, grimpe au classement — 100% pour le fun, zéro argent réel.</p>
+    <ul class="welcome-features">
+      <li><span class="welcome-icon">🎲</span><div><strong>Parier sur un match</strong><span>Choisis un match à venir : vainqueur (1N2) et, sur les grosses équipes, score exact, +/− de buts, buteur, double chance…</span></div></li>
+      <li><span class="welcome-icon">🎰</span><div><strong>Combiné</strong><span>Clique <strong>➕ Combiné</strong> pour cumuler plusieurs sélections (même plusieurs sur un seul match) et multiplier les cotes</span></div></li>
+      <li><span class="welcome-icon">↩</span><div><strong>Retirer ta mise</strong><span>Changé d'avis ? Tant que le match n'a pas commencé, va dans « Paris en cours » et récupère tes pièces</span></div></li>
+      <li><span class="welcome-icon">🎁</span><div><strong>Bonus quotidien</strong><span>Reviens chaque jour réclamer des pièces gratuites</span></div></li>
+      <li><span class="welcome-icon">📊</span><div><strong>Stats & badges</strong><span>Suis ton taux de réussite, ton plus gros gain, ta série, et débloque des badges</span></div></li>
+      <li><span class="welcome-icon">🏆</span><div><strong>Classement</strong><span>Compare ton solde avec tes proches en temps réel</span></div></li>
+      <li><span class="welcome-icon">🔑</span><div><strong>Multi-appareils</strong><span>Connecte-toi avec ton pays + code secret pour retrouver ton solde et tes paris partout</span></div></li>
+    </ul>
+    <p class="welcome-tip">💡 La cote indique le gain : mise × cote = gain potentiel. Plus c'est risqué, plus la cote est haute.</p>
+    <button type="button" class="welcome-cta" data-betintro-dismiss>Je parie ! 💸</button>
   </div>
 </div>
 

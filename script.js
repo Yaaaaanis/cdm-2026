@@ -121,6 +121,7 @@ const FAV_KEY = "cdm_favorites";
 const THEME_KEY = "cdm_theme";
 const BRACKET_KEY = "cdm_bracket_predictions";
 const WELCOME_KEY = "cdm_welcome_seen";
+const BET_INTRO_KEY = "cdm_bet_intro_seen";
 const MATCH_MS = 105 * 60 * 1000;
 const BRACKET_ROUNDS = [
   { key: "r32", label: "16es de finale", short: "16e", matchCount: 16 },
@@ -992,7 +993,7 @@ function setFavorites(list) {
 // Données de profil synchronisées entre appareils (solde + paris + favoris).
 window.CDM_collectProfileData = function () {
   const st = window.Betting && window.Betting.exportState ? window.Betting.exportState() : { wallet: null, bets: [] };
-  return { wallet: st.wallet, bets: st.bets, favorites: getFavorites() };
+  return { wallet: st.wallet, bets: st.bets, favorites: getFavorites(), bracket };
 };
 
 function applyProfileData(data) {
@@ -1001,6 +1002,12 @@ function applyProfileData(data) {
     window.Betting.importState({ wallet: data.wallet, bets: data.bets });
   }
   if (Array.isArray(data.favorites)) setFavorites(data.favorites);
+  if (data.bracket) {
+    bracket = normalizeBracket(data.bracket);
+    saveBracketLocal();
+    renderKnockout();
+    renderBracketTease();
+  }
 }
 
 function toggleFavorite(team) {
@@ -1167,7 +1174,10 @@ function eligibleTeamsForSlot(slot) {
 
 function emptyBracket() {
   return {
-    seeds: Array.from({ length: 16 }, () => ({ home: "", away: "" })),
+    groups: Object.fromEntries(
+      Object.keys(GROUPS).map((g) => [g, { first: "", second: "", third: "" }])
+    ),
+    thirdOrder: Object.keys(GROUPS).sort(),
     picks: {
       r32: Array(16).fill(""),
       r16: Array(8).fill(""),
@@ -1182,13 +1192,30 @@ function normalizeBracket(data) {
   const base = emptyBracket();
   if (!data || typeof data !== "object") return base;
 
-  if (Array.isArray(data.seeds)) {
-    data.seeds.slice(0, 16).forEach((seed, i) => {
-      base.seeds[i] = {
-        home: seed?.home || "",
-        away: seed?.away || ""
+  if (data.groups && typeof data.groups === "object") {
+    Object.keys(GROUPS).forEach((g) => {
+      const p = data.groups[g];
+      base.groups[g] = {
+        first: p?.first || "",
+        second: p?.second || "",
+        third: p?.third || ""
       };
     });
+  }
+
+  if (Array.isArray(data.thirdOrder)) {
+    const order = [];
+    const seen = new Set();
+    data.thirdOrder.forEach((g) => {
+      if (GROUPS[g] && !seen.has(g)) {
+        order.push(g);
+        seen.add(g);
+      }
+    });
+    Object.keys(GROUPS).forEach((g) => {
+      if (!seen.has(g)) order.push(g);
+    });
+    base.thirdOrder = order.slice(0, 12);
   }
 
   BRACKET_ROUNDS.forEach((round) => {
@@ -1200,14 +1227,29 @@ function normalizeBracket(data) {
   return base;
 }
 
+function groupPickComplete(g) {
+  const p = bracket.groups?.[g];
+  if (!p?.first || !p?.second || !p?.third) return false;
+  return new Set([p.first, p.second, p.third]).size === 3;
+}
+
+function groupsComplete() {
+  return Object.keys(GROUPS).every(groupPickComplete);
+}
+
+function clearKnockoutPicks() {
+  BRACKET_ROUNDS.forEach((round) => {
+    bracket.picks[round.key] = Array(round.matchCount).fill("");
+  });
+}
+
 function validateBracket() {
-  ROUND16_MATCHES.forEach((m, i) => {
-    const seed = bracket.seeds[i];
-    if (!seed) return;
-    const eligibleHome = eligibleTeamsForSlot(m.slots[0]);
-    const eligibleAway = eligibleTeamsForSlot(m.slots[1]);
-    if (seed.home && !eligibleHome.includes(seed.home)) seed.home = "";
-    if (seed.away && !eligibleAway.includes(seed.away)) seed.away = "";
+  Object.keys(GROUPS).forEach((g) => {
+    const p = bracket.groups[g];
+    if (!p) return;
+    ["first", "second", "third"].forEach((rank) => {
+      if (p[rank] && !GROUPS[g].includes(p[rank])) p[rank] = "";
+    });
   });
 
   BRACKET_ROUNDS.forEach((round) => {
@@ -1227,22 +1269,34 @@ function loadBracket() {
   }
 }
 
-function persistBracket() {
+function saveBracketLocal() {
   localStorage.setItem(BRACKET_KEY, JSON.stringify(bracket));
 }
 
-function clearBracketAfter(roundKey) {
-  const idx = BRACKET_ROUNDS.findIndex((round) => round.key === roundKey);
-  BRACKET_ROUNDS.slice(idx + 1).forEach((round) => {
-    bracket.picks[round.key] = Array(round.matchCount).fill("");
-  });
+function persistBracket() {
+  saveBracketLocal();
+  syncAfterBetChange();
 }
 
-function setBracketSeed(matchIndex, side, team) {
-  if (!bracket.seeds[matchIndex]) return;
-  bracket.seeds[matchIndex][side] = team;
-  bracket.picks.r32[matchIndex] = "";
-  clearBracketAfter("r32");
+function setGroupPick(g, rank, team) {
+  if (!bracket.groups[g]) bracket.groups[g] = { first: "", second: "", third: "" };
+  bracket.groups[g][rank] = team;
+  ["first", "second", "third"].forEach((r) => {
+    if (r !== rank && bracket.groups[g][r] === team) bracket.groups[g][r] = "";
+  });
+  clearKnockoutPicks();
+  persistBracket();
+  renderKnockout();
+}
+
+function moveThirdGroup(group, dir) {
+  const order = [...bracket.thirdOrder];
+  const i = order.indexOf(group);
+  const j = i + dir;
+  if (i < 0 || j < 0 || j >= order.length) return;
+  [order[i], order[j]] = [order[j], order[i]];
+  bracket.thirdOrder = order;
+  clearKnockoutPicks();
   persistBracket();
   renderKnockout();
 }
@@ -1250,15 +1304,18 @@ function setBracketSeed(matchIndex, side, team) {
 function setBracketWinner(roundKey, matchIndex, team) {
   if (!team) return;
   bracket.picks[roundKey][matchIndex] = team;
-  clearBracketAfter(roundKey);
+  const idx = BRACKET_ROUNDS.findIndex((round) => round.key === roundKey);
+  BRACKET_ROUNDS.slice(idx + 1).forEach((round) => {
+    bracket.picks[round.key] = Array(round.matchCount).fill("");
+  });
   persistBracket();
   renderKnockout();
 }
 
 function getBracketTeams(roundKey, matchIndex) {
   if (roundKey === "r32") {
-    const seed = bracket.seeds[matchIndex] || { home: "", away: "" };
-    return [seed.home, seed.away];
+    const auto = computeAutoSeeds()[matchIndex] || { home: "", away: "" };
+    return [auto.home, auto.away];
   }
 
   const pair = BRACKET_PAIRS[roundKey]?.[matchIndex];
@@ -1268,6 +1325,91 @@ function getBracketTeams(roundKey, matchIndex) {
     bracket.picks[prevKey][pair[0]] || "",
     bracket.picks[prevKey][pair[1]] || ""
   ];
+}
+
+function bestThirdGroups() {
+  return (bracket.thirdOrder || []).slice(0, 8);
+}
+
+// Affecte les 8 meilleurs 3es (choisis par l'utilisateur) aux slots FIFA.
+function matchThirdsToSlots() {
+  const qual = bestThirdGroups();
+  const slots = [];
+  ROUND16_MATCHES.forEach((m, mi) => {
+    ["home", "away"].forEach((side) => {
+      const slot = m.slots[side === "home" ? 0 : 1];
+      if (slot && slot.kind === "3e") slots.push({ key: `${mi}-${side}`, allowed: slot.groups });
+    });
+  });
+  slots.sort(
+    (a, b) =>
+      qual.filter((g) => a.allowed.includes(g)).length -
+      qual.filter((g) => b.allowed.includes(g)).length
+  );
+
+  const assign = {};
+  const used = new Set();
+  const bt = (i) => {
+    if (i === slots.length) return true;
+    const slot = slots[i];
+    for (const g of qual) {
+      if (used.has(g) || !slot.allowed.includes(g)) continue;
+      used.add(g);
+      assign[slot.key] = g;
+      if (bt(i + 1)) return true;
+      used.delete(g);
+      delete assign[slot.key];
+    }
+    return false;
+  };
+  bt(0);
+  return assign;
+}
+
+function computeAutoSeeds() {
+  if (!groupsComplete()) {
+    return ROUND16_MATCHES.map(() => ({ home: "", away: "" }));
+  }
+  const thirds = matchThirdsToSlots();
+  return ROUND16_MATCHES.map((m, mi) => {
+    const teamFor = (slot, side) => {
+      if (!slot) return "";
+      if (slot.kind === "1er") return bracket.groups[slot.groups[0]]?.first || "";
+      if (slot.kind === "2e") return bracket.groups[slot.groups[0]]?.second || "";
+      const g = thirds[`${mi}-${side}`];
+      return g ? bracket.groups[g]?.third || "" : "";
+    };
+    return { home: teamFor(m.slots[0], "home"), away: teamFor(m.slots[1], "away") };
+  });
+}
+
+function resetBracketGame() {
+  if (!window.confirm("Tout effacer ? Poules, 3es et tableau seront remis à zéro.")) return;
+  bracket = emptyBracket();
+  persistBracket();
+  renderKnockout();
+}
+
+function groupRankSelect(g, rank) {
+  const teams = GROUPS[g] || [];
+  const current = bracket.groups[g]?.[rank] || "";
+  const used = new Set(
+    ["first", "second", "third"]
+      .filter((r) => r !== rank)
+      .map((r) => bracket.groups[g]?.[r])
+      .filter(Boolean)
+  );
+  const labels = { first: "1er", second: "2e", third: "3e" };
+  const opts = ['<option value="">— ' + labels[rank] + " —</option>"]
+    .concat(
+      teams.map((t) => {
+        const sel = t === current ? " selected" : "";
+        const dis = used.has(t) && t !== current ? " disabled" : "";
+        return `<option value="${escapeHtml(t)}"${sel}${dis}>${teamLabel(t)}</option>`;
+      })
+    )
+    .join("");
+  return `<select class="bg-pick" data-group="${g}" data-rank="${rank}" aria-label="${labels[rank]} groupe ${g}">${opts}</select>`;
 }
 
 function groupGoalStats(g) {
@@ -1301,130 +1443,221 @@ function rankedGroup(g) {
   });
 }
 
-function autoFillBracket() {
-  ROUND16_MATCHES.forEach((m, i) => {
-    ["home", "away"].forEach((side, sideIdx) => {
-      const slot = m.slots[sideIdx];
-      if (!slot || slot.kind === "3e") return;
-      const ranked = rankedGroup(slot.groups[0]);
-      const team = slot.kind === "1er" ? ranked[0] : ranked[1];
-      if (team) bracket.seeds[i][side] = team;
+// Ordre d'affichage "en arbre" : chaque round est ordonné de haut en bas pour
+// que les deux matchs qui alimentent un match du tour suivant soient adjacents.
+function bracketDisplayOrder() {
+  const keys = BRACKET_ROUNDS.map((r) => r.key);
+  const order = {};
+  order[keys[keys.length - 1]] = [0];
+  for (let ri = keys.length - 2; ri >= 0; ri -= 1) {
+    const key = keys[ri];
+    const parentKey = keys[ri + 1];
+    const arr = [];
+    order[parentKey].forEach((pm) => {
+      const pair = BRACKET_PAIRS[parentKey][pm];
+      arr.push(pair[0], pair[1]);
+    });
+    order[key] = arr;
+  }
+  return order;
+}
+
+// Une ligne d'équipe dans une carte de match.
+function bracketSlotHtml(roundKey, matchIndex, side, team) {
+  const pick = bracket.picks[roundKey][matchIndex];
+  const win = team && pick === team;
+  const lose = pick && team && pick !== team;
+  const cls = `bk-slot${win ? " win" : ""}${lose ? " lose" : ""}`;
+
+  if (roundKey === "r32") {
+    const name = team ? teamLabel(team) : '<span class="bk-empty">—</span>';
+    return `<div class="${cls} bk-slot-readonly">
+      <span class="bk-name">${name}</span>
+      <button type="button" class="bk-pick" data-bracket-winner="${escapeHtml(team)}" data-round="r32" data-match="${matchIndex}" ${team ? "" : "disabled"} title="Désigner vainqueur">✓</button>
+    </div>`;
+  }
+
+  const name = team ? teamLabel(team) : '<span class="bk-empty">à venir</span>';
+  return `<button type="button" class="${cls} bk-team" data-bracket-winner="${escapeHtml(team)}" data-round="${roundKey}" data-match="${matchIndex}" ${team ? "" : "disabled"}>
+    <span class="bk-name">${name}</span>
+    <span class="bk-check">✓</span>
+  </button>`;
+}
+
+// Carte d'un match du bracket.
+function bracketCellHtml(roundKey, matchIndex) {
+  const [home, away] = getBracketTeams(roundKey, matchIndex);
+  const pick = bracket.picks[roundKey][matchIndex];
+  const r32 = roundKey === "r32" ? ROUND16_MATCHES[matchIndex] : null;
+  const meta = r32
+    ? `<div class="bk-match-meta"><span class="bk-fifa">M${r32.number}</span><span class="bk-slotline">${slotShortLabel(r32.slots[0])} · ${slotShortLabel(r32.slots[1])}</span></div>`
+    : "";
+  return `<div class="bk-match${pick ? " decided" : ""}">
+    ${meta}
+    ${bracketSlotHtml(roundKey, matchIndex, "home", home)}
+    <span class="bk-vs">vs</span>
+    ${bracketSlotHtml(roundKey, matchIndex, "away", away)}
+  </div>`;
+}
+
+// Étape 1 : choix manuel 1er / 2e / 3e de chaque poule.
+function renderBracketGroups() {
+  const box = document.getElementById("bracketGroups");
+  if (!box) return;
+  box.innerHTML = "";
+  Object.keys(GROUPS).forEach((g) => {
+    const done = groupPickComplete(g);
+    const mini = document.createElement("div");
+    mini.className = "bg-group" + (done ? " done" : "");
+    mini.innerHTML = `
+      <div class="bg-title">Groupe ${g}${done ? " ✓" : ""}</div>
+      <div class="bg-pickers">
+        <label class="bg-pick-row"><span>1er</span>${groupRankSelect(g, "first")}</label>
+        <label class="bg-pick-row"><span>2e</span>${groupRankSelect(g, "second")}</label>
+        <label class="bg-pick-row"><span>3e</span>${groupRankSelect(g, "third")}</label>
+      </div>
+    `;
+    box.appendChild(mini);
+  });
+
+  box.querySelectorAll(".bg-pick").forEach((sel) => {
+    sel.addEventListener("change", () => {
+      setGroupPick(sel.dataset.group, sel.dataset.rank, sel.value);
     });
   });
-  BRACKET_ROUNDS.forEach((round) => {
-    bracket.picks[round.key] = Array(round.matchCount).fill("");
+}
+
+// Étape 2 : classement des 12 troisièmes (8 premiers = qualifiés).
+function renderBracketThirds() {
+  const wrap = document.getElementById("bracketThirdsWrap");
+  const list = document.getElementById("bracketThirds");
+  if (!wrap || !list) return;
+
+  if (!groupsComplete()) {
+    wrap.classList.add("hidden");
+    list.innerHTML = "";
+    return;
+  }
+  wrap.classList.remove("hidden");
+  list.innerHTML = "";
+
+  bracket.thirdOrder.forEach((g, i) => {
+    const team = bracket.groups[g]?.third || "";
+    const qual = i < 8;
+    const li = document.createElement("li");
+    li.className = "bt-row" + (qual ? " qual" : "");
+    li.innerHTML = `
+      <span class="bt-rank">${i + 1}</span>
+      <span class="bt-group">Grp ${g}</span>
+      <span class="bt-team">${team ? teamLabel(team) : "—"}</span>
+      ${qual ? '<span class="bg-badge t">Qualifié</span>' : ""}
+      <span class="bt-actions">
+        <button type="button" class="bt-move" data-group="${g}" data-dir="-1" ${i === 0 ? "disabled" : ""} title="Monter">↑</button>
+        <button type="button" class="bt-move" data-group="${g}" data-dir="1" ${i === bracket.thirdOrder.length - 1 ? "disabled" : ""} title="Descendre">↓</button>
+      </span>
+    `;
+    list.appendChild(li);
   });
-  persistBracket();
-  renderKnockout();
-  showToast("info", "Bracket pré-rempli", "1ᵉʳˢ et 2ᵉˢ d'après les classements actuels. Les 3ᵉˢ restent à compléter.");
-}
 
-function bracketTeamSelect(matchIndex, side, value, slot) {
-  const teams = eligibleTeamsForSlot(slot);
-  const placeholder = slot ? `— ${slotShortLabel(slot)} —` : "Choisir une équipe";
-  const options = ["", ...teams]
-    .map((team) => `<option value="${team}"${team === value ? " selected" : ""}>${team ? teamLabel(team) : placeholder}</option>`)
-    .join("");
-  return `<select class="bracket-select" data-bracket-seed="${matchIndex}" data-side="${side}" title="${placeholder}">${options}</select>`;
-}
-
-function bracketWinnerButton(roundKey, matchIndex, team, side) {
-  const picked = bracket.picks[roundKey][matchIndex] === team;
-  const disabled = !team ? " disabled" : "";
-  return `
-    <button type="button" class="bracket-team${picked ? " picked" : ""}" data-bracket-winner="${team}" data-round="${roundKey}" data-match="${matchIndex}"${disabled}>
-      <span class="bracket-side">${side}</span>
-      <span>${team ? teamLabel(team) : "En attente"}</span>
-    </button>
-  `;
+  list.querySelectorAll(".bt-move").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      moveThirdGroup(btn.dataset.group, parseInt(btn.dataset.dir, 10));
+    });
+  });
 }
 
 function renderBracketBuilder() {
   const box = document.getElementById("bracketBuilder");
   if (!box) return;
 
+  if (!groupsComplete()) {
+    box.innerHTML = `
+      <div class="bracket-placeholder">
+        <span class="bracket-placeholder-icon">🏆</span>
+        <strong>Étape 3 — Ton tableau</strong>
+        <p>Complète d'abord les 12 poules ci-dessus, puis classe les 3es. Les 16es se rempliront automatiquement.</p>
+      </div>`;
+    return;
+  }
+
   const champion = bracket.picks.final[0];
   const finalTeams = getBracketTeams("final", 0).filter(Boolean);
   box.innerHTML = `
     <div class="bracket-head">
       <div>
-        <h3>Mon bracket</h3>
-        <p class="section-hint">Chaque slot des 16es est limité aux équipes qui peuvent y aller selon le tirage FIFA. Clique sur le vainqueur pour le faire avancer.</p>
+        <h3>🏆 Étape 3 — Ton tableau</h3>
+        <p class="section-hint">Les 16es sont pré-remplis d'après tes poules. Clique l'équipe qui passe pour la faire avancer jusqu'à la finale.</p>
       </div>
       <div class="bracket-actions">
-        <button type="button" class="admin-btn outline" id="bracketAutofill">Remplir auto</button>
-        <button type="button" class="admin-btn outline" id="bracketShare">Partager</button>
-        <button type="button" class="admin-btn outline danger" id="bracketReset">Réinitialiser</button>
+        <button type="button" class="admin-btn outline" id="bracketShare">🔗 Partager</button>
+        <button type="button" class="admin-btn outline danger" id="bracketReset">↺ Tout effacer</button>
       </div>
     </div>
     <div class="bracket-champion ${champion ? "filled" : ""}">
       <span class="bracket-trophy">🏆</span>
       <div>
-        <span class="bracket-champion-label">Mon champion</span>
+        <span class="bracket-champion-label">Champion du monde</span>
         <strong>${champion ? teamLabel(champion) : "À déterminer"}</strong>
-        ${finalTeams.length === 2 ? `<small>Finale prévue : ${teamLabel(finalTeams[0])} vs ${teamLabel(finalTeams[1])}</small>` : ""}
+        ${finalTeams.length === 2 ? `<small>Finale : ${teamLabel(finalTeams[0])} — ${teamLabel(finalTeams[1])}</small>` : ""}
       </div>
     </div>
     <div class="bracket-scroll">
-      <div class="bracket-grid"></div>
+      <div class="bk-tree"></div>
     </div>
   `;
 
-  const grid = box.querySelector(".bracket-grid");
-  BRACKET_ROUNDS.forEach((round) => {
+  const tree = box.querySelector(".bk-tree");
+  const order = bracketDisplayOrder();
+  const keys = BRACKET_ROUNDS.map((r) => r.key);
+
+  keys.forEach((key, ri) => {
+    const round = BRACKET_ROUNDS[ri];
     const col = document.createElement("div");
-    col.className = "bracket-round";
-    col.innerHTML = `<h4>${round.label}</h4>`;
-
-    for (let i = 0; i < round.matchCount; i += 1) {
-      const [home, away] = getBracketTeams(round.key, i);
-      const card = document.createElement("div");
-      card.className = "bracket-match";
-      const r32 = round.key === "r32" ? ROUND16_MATCHES[i] : null;
-      const slotInfo = r32
-        ? `<div class="bracket-slot">${slotShortLabel(r32.slots[0])} <span class="bracket-slot-vs">vs</span> ${slotShortLabel(r32.slots[1])}</div>`
-        : "";
-      card.innerHTML = `
-        <div class="bracket-match-title">${round.short} ${i + 1}${r32 ? ` <span class="bracket-fifa">M${r32.number}</span>` : ""}</div>
-        ${slotInfo}
-        ${r32 ? `
-          <div class="bracket-seeds">
-            ${bracketTeamSelect(i, "home", home, r32.slots[0])}
-            ${bracketTeamSelect(i, "away", away, r32.slots[1])}
-          </div>
-        ` : ""}
-        <div class="bracket-picks">
-          ${bracketWinnerButton(round.key, i, home, "A")}
-          ${bracketWinnerButton(round.key, i, away, "B")}
-        </div>
-      `;
-      col.appendChild(card);
-    }
-
-    grid.appendChild(col);
-  });
-
-  box.querySelectorAll(".bracket-select").forEach((select) => {
-    select.addEventListener("change", () => {
-      setBracketSeed(parseInt(select.dataset.bracketSeed, 10), select.dataset.side, select.value);
+    col.className = `bk-round bk-round-${key}`;
+    const head = document.createElement("div");
+    head.className = "bk-round-head";
+    head.textContent = round.label;
+    const cells = document.createElement("div");
+    cells.className = "bk-cells";
+    order[key].forEach((mi) => {
+      const cell = document.createElement("div");
+      cell.className = "bk-cell";
+      cell.innerHTML = bracketCellHtml(key, mi);
+      cells.appendChild(cell);
     });
+    col.appendChild(head);
+    col.appendChild(cells);
+    tree.appendChild(col);
+
+    if (ri < keys.length - 1) {
+      const nextKey = keys[ri + 1];
+      const link = document.createElement("div");
+      link.className = "bk-link";
+      const linkHead = document.createElement("div");
+      linkHead.className = "bk-link-head";
+      const linkCells = document.createElement("div");
+      linkCells.className = "bk-link-cells";
+      order[nextKey].forEach((parentIdx) => {
+        const item = document.createElement("div");
+        item.className = "bk-link-item" + (bracket.picks[nextKey][parentIdx] ? " done" : "");
+        linkCells.appendChild(item);
+      });
+      link.appendChild(linkHead);
+      link.appendChild(linkCells);
+      tree.appendChild(link);
+    }
   });
 
   box.querySelectorAll("[data-bracket-winner]").forEach((btn) => {
     btn.addEventListener("click", () => {
+      if (btn.disabled) return;
       setBracketWinner(btn.dataset.round, parseInt(btn.dataset.match, 10), btn.dataset.bracketWinner);
     });
   });
 
-  box.querySelector("#bracketReset")?.addEventListener("click", () => {
-    if (!window.confirm("Réinitialiser ton bracket ?")) return;
-    bracket = emptyBracket();
-    persistBracket();
-    renderKnockout();
-  });
+  box.querySelector("#bracketReset")?.addEventListener("click", resetBracketGame);
 
   box.querySelector("#bracketShare")?.addEventListener("click", shareBracket);
-  box.querySelector("#bracketAutofill")?.addEventListener("click", autoFillBracket);
 }
 
 function shareBracket() {
@@ -1567,8 +1800,8 @@ function renderLiveBanner() {
 function renderBracketTease() {
   const el = document.getElementById("bracketTease");
   if (!el) return;
-  const empty = bracket.seeds.every((s) => !s.home && !s.away);
-  if (!empty) {
+  const started = groupsComplete() || bracket.picks.final[0] || bracket.picks.r32.some(Boolean);
+  if (started) {
     el.classList.add("hidden");
     el.innerHTML = "";
     return;
@@ -1579,7 +1812,7 @@ function renderBracketTease() {
       <span class="bracket-tease-icon">🏆</span>
       <div>
         <strong>Fais ton bracket de prédictions</strong>
-        <span>Qui ira en finale ? Qui sera champion du monde ?</span>
+        <span>Classe les 12 poules, choisis les meilleurs 3es, puis prédit le champion !</span>
       </div>
       <button type="button" class="admin-btn" data-page="10">C'est parti →</button>
     </div>
@@ -1736,6 +1969,8 @@ function renderKnockout() {
   const list = document.getElementById("knockoutList");
   if (!filters || !list) return;
 
+  renderBracketGroups();
+  renderBracketThirds();
   renderBracketBuilder();
 
   const phases = ["all", "16es", "8es", "qf", "df", "3e", "finale"];
@@ -3002,7 +3237,10 @@ function show(i) {
   window.scrollTo({ top: 0, behavior: "smooth" });
   if (i === 9) renderGroups();
   if (i === 11) document.getElementById("search")?.focus();
-  if (i === 12) renderBettingPage();
+  if (i === 12) {
+    renderBettingPage();
+    maybeShowBettingIntro();
+  }
   if (i === 14) renderLeaderboard();
 }
 
@@ -3112,6 +3350,45 @@ function initWelcome() {
   if (!localStorage.getItem(WELCOME_KEY)) {
     setTimeout(openWelcome, 350);
   }
+}
+
+function openBettingIntro() {
+  const modal = document.getElementById("bettingIntroModal");
+  if (!modal) return;
+  modal.classList.remove("hidden");
+  document.body.classList.add("modal-open");
+}
+
+function closeBettingIntro() {
+  const modal = document.getElementById("bettingIntroModal");
+  if (!modal) return;
+  modal.classList.add("hidden");
+  document.body.classList.remove("modal-open");
+  localStorage.setItem(BET_INTRO_KEY, "1");
+}
+
+function initBettingIntro() {
+  const modal = document.getElementById("bettingIntroModal");
+  if (!modal) return;
+
+  modal.querySelectorAll("[data-betintro-dismiss]").forEach((btn) => {
+    btn.addEventListener("click", closeBettingIntro);
+  });
+
+  document.addEventListener("keydown", (e) => {
+    if (e.key === "Escape" && !modal.classList.contains("hidden")) closeBettingIntro();
+  });
+
+  document.getElementById("reopenBettingIntro")?.addEventListener("click", openBettingIntro);
+}
+
+// Affiche l'intro paris à la première arrivée sur la page (après le pop-up
+// d'accueil s'il est encore ouvert).
+function maybeShowBettingIntro() {
+  if (localStorage.getItem(BET_INTRO_KEY)) return;
+  const welcome = document.getElementById("welcomeModal");
+  if (welcome && !welcome.classList.contains("hidden")) return;
+  setTimeout(openBettingIntro, 300);
 }
 
 function showToast(type, title, message, duration = 4000) {
@@ -3296,6 +3573,7 @@ async function boot() {
   initTheme();
   initNav();
   initWelcome();
+  initBettingIntro();
   initJoinModal();
   initLoginModal();
   initMatchModal();
