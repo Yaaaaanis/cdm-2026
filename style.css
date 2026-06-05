@@ -3600,6 +3600,29 @@ body.test-mode .top-bar::after {
   z-index: 60;
 }
 
+body.dev-soon-mode .top-bar::after {
+  content: "DEV ?soon — scores locaux";
+  position: fixed;
+  top: 6px;
+  left: 50%;
+  transform: translateX(-50%);
+  background: #7c3aed;
+  color: #fff;
+  font-size: 0.58rem;
+  font-weight: 800;
+  letter-spacing: 0.5px;
+  padding: 2px 10px;
+  border-radius: 999px;
+  pointer-events: none;
+  z-index: 60;
+  max-width: 92vw;
+  text-align: center;
+}
+
+body.test-mode.dev-soon-mode .top-bar::after {
+  content: "TEST + DEV ?soon";
+}
+
 /* ===== Formulaire Rejoindre ===== */
 .join-modal-card {
   text-align: left;

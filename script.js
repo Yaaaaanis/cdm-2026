@@ -117,6 +117,45 @@ function applyDevSoon() {
     console.log(`[DEV] 1er match (${matches[0].h} vs ${matches[0].a}) avancé à ${dateStr} ${timeStr}`);
   }
 }
+
+function isDevSoonMode() {
+  return new URLSearchParams(window.location.search).has("soon");
+}
+
+// Scores saisis en ?soon=N : locaux à la session, jamais synchronisés au cloud.
+const DEV_SOON_SCORES_KEY = "cdm_dev_soon_scores";
+
+function getDevSoonScores() {
+  try {
+    return JSON.parse(sessionStorage.getItem(DEV_SOON_SCORES_KEY)) || {};
+  } catch (_) {
+    return {};
+  }
+}
+
+function saveDevSoonScores(o) {
+  sessionStorage.setItem(DEV_SOON_SCORES_KEY, JSON.stringify(o));
+}
+
+function getScoreRecord(m) {
+  if (isDevSoonMode()) {
+    const ds = getDevSoonScores()[m.id];
+    if (ds) return ds;
+  }
+  return scores[m.id] || null;
+}
+
+function setScoreRecord(m, record) {
+  if (isDevSoonMode()) {
+    const o = getDevSoonScores();
+    if (record == null) delete o[m.id];
+    else o[m.id] = record;
+    saveDevSoonScores(o);
+    return;
+  }
+  if (record == null) delete scores[m.id];
+  else scores[m.id] = record;
+}
 const FAV_KEY = "cdm_favorites";
 const THEME_KEY = "cdm_theme";
 const BRACKET_KEY = "cdm_bracket_predictions";
@@ -323,22 +362,22 @@ let bracket = loadBracket();
 let matchRefreshTimer = null;
 
 function getScore(m) {
-  const s = scores[m.id];
+  const s = getScoreRecord(m);
   if (!s || s.h === undefined || s.a === undefined) return null;
   return { h: Number(s.h), a: Number(s.a) };
 }
 
 // Liste des buteurs saisie par l'admin (pour résoudre les paris "buteur").
 function getScorers(m) {
-  const s = scores[m.id];
+  const s = getScoreRecord(m);
   return Array.isArray(s && s.scorers) ? s.scorers : [];
 }
 
 function setScorers(m, names) {
-  const s = scores[m.id];
-  if (!s) return;
-  scores[m.id] = { ...s, scorers: Array.from(new Set(names)) };
-  persistData();
+  const rec = getScoreRecord(m);
+  if (!rec) return;
+  setScoreRecord(m, { ...rec, scorers: Array.from(new Set(names)) });
+  if (!isDevSoonMode()) persistData();
   if (!canSettleMatchBets(m)) return;
   const win = settleMatchBets(m, { score: getScore(m), scorers: getScorers(m) });
   renderBettingPage();
@@ -355,7 +394,8 @@ function hasScore(m) {
 }
 
 function isMatchFinalized(m) {
-  return !!(scores[m.id] && scores[m.id].final === true);
+  const s = getScoreRecord(m);
+  return !!(s && s.final === true);
 }
 
 function canSettleMatchBets(m) {
@@ -364,8 +404,6 @@ function canSettleMatchBets(m) {
 }
 
 function recalcStandingsFromScores() {
-  if (!Object.keys(scores).length) return;
-
   Object.keys(GROUPS).forEach((g) => {
     GROUPS[g].forEach((team) => {
       standings[g][team] = 0;
@@ -391,7 +429,7 @@ function recalcStandingsFromScores() {
 
 function saveMatchScore(m, h, a) {
   if (h === "" && a === "") {
-    delete scores[m.id];
+    setScoreRecord(m, null);
   } else {
     const hi = parseInt(h, 10);
     const ai = parseInt(a, 10);
@@ -399,14 +437,15 @@ function saveMatchScore(m, h, a) {
       showToast("error", "Erreur", "Score invalide.");
       return;
     }
-    const prev = scores[m.id];
-    scores[m.id] = { h: hi, a: ai };
-    // Conserve les buteurs ; un changement de score annule la validation « fin du match ».
-    if (prev && Array.isArray(prev.scorers)) scores[m.id].scorers = prev.scorers;
-    if (prev && prev.final && prev.h === hi && prev.a === ai) scores[m.id].final = true;
+    const prev = getScoreRecord(m);
+    const next = { h: hi, a: ai };
+    if (prev && Array.isArray(prev.scorers)) next.scorers = prev.scorers;
+    if (prev && prev.final && prev.h === hi && prev.a === ai) next.final = true;
+    setScoreRecord(m, next);
   }
   recalcStandingsFromScores();
-  persistData();
+  if (!isDevSoonMode()) persistData();
+  else showToast("info", "Mode ?soon", "Score enregistré localement — rien n'est envoyé sur le site public.");
   // Résout les paris seulement si le match est terminé (ou en mode test).
   const winnings =
     h === "" || a === "" || !canSettleMatchBets(m)
@@ -500,9 +539,10 @@ function finalizeMatch(m) {
     return;
   }
   if (isMatchFinalized(m)) return;
-  scores[m.id] = { ...scores[m.id], final: true };
+  setScoreRecord(m, { ...getScoreRecord(m), final: true });
   recalcStandingsFromScores();
-  persistData();
+  if (!isDevSoonMode()) persistData();
+  else showToast("info", "Mode ?soon", "Match validé en local seulement — le site public n'est pas modifié.");
   const winnings = settleMatchBets(m, { score: getScore(m), scorers: getScorers(m) });
   render();
   renderGroups();
@@ -516,9 +556,9 @@ function finalizeMatch(m) {
 }
 
 function clearMatchScore(m) {
-  delete scores[m.id];
+  setScoreRecord(m, null);
   recalcStandingsFromScores();
-  persistData();
+  if (!isDevSoonMode()) persistData();
   render();
   renderGroups();
 }
@@ -3743,6 +3783,7 @@ async function boot() {
   initMatchModal();
   validateBracket();
   document.body.classList.toggle("test-mode", !!(window.Players && window.Players.isTestMode()));
+  document.body.classList.toggle("dev-soon-mode", isDevSoonMode());
   const result = await initStandingsSync();
   syncMode = result.mode;
   if (window.Betting) window.Betting.init();
