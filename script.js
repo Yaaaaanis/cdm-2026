@@ -139,8 +139,7 @@ function saveDevSoonScores(o) {
 
 function getScoreRecord(m) {
   if (isDevSoonMode()) {
-    const ds = getDevSoonScores()[m.id];
-    if (ds) return ds;
+    return getDevSoonScores()[m.id] || null;
   }
   return scores[m.id] || null;
 }
@@ -305,6 +304,8 @@ function comboLegStatus(leg) {
   if (!m || !window.Betting) return "pending";
   const ctx = betContext(m);
   if (!ctx || !ctx.score) return "pending";
+  // Score provisoire (OK sans Fin du match) : on n'affiche pas gagné/perdu.
+  if (!ctx.isTest && !isMatchFinalized(m)) return "pending";
   const o = window.Betting.betOutcome(
     { market: leg.market, selection: leg.selection },
     ctx.score,
@@ -378,6 +379,7 @@ function setScorers(m, names) {
   if (!rec) return;
   setScoreRecord(m, { ...rec, scorers: Array.from(new Set(names)) });
   if (!isDevSoonMode()) persistData();
+  showToast("success", "Buteurs enregistrés", names.length ? names.join(", ") : "Aucun buteur retenu.");
   if (!canSettleMatchBets(m)) return;
   const win = settleMatchBets(m, { score: getScore(m), scorers: getScorers(m) });
   renderBettingPage();
@@ -400,7 +402,7 @@ function isMatchFinalized(m) {
 
 function canSettleMatchBets(m) {
   if (isTestFlagged(m)) return true;
-  return getMatchStatus(m).key === "done" || isMatchFinalized(m);
+  return isMatchFinalized(m);
 }
 
 function recalcStandingsFromScores() {
@@ -413,8 +415,7 @@ function recalcStandingsFromScores() {
   matches.forEach((m) => {
     const s = getScore(m);
     if (!s || Number.isNaN(s.h) || Number.isNaN(s.a)) return;
-    // Ne compte que les matchs terminés ou validés par l'admin.
-    if (getMatchStatus(m).key !== "done" && !isMatchFinalized(m)) return;
+    if (!isMatchFinalized(m)) return;
     const g = m.g;
     if (s.h > s.a) {
       standings[g][m.h] = (standings[g][m.h] ?? 0) + 3;
@@ -445,7 +446,7 @@ function saveMatchScore(m, h, a) {
   }
   recalcStandingsFromScores();
   if (!isDevSoonMode()) persistData();
-  else showToast("info", "Mode ?soon", "Score enregistré localement — rien n'est envoyé sur le site public.");
+  else if (h !== "" && a !== "") showToast("info", "Mode ?soon", "Score local uniquement — rien n'est envoyé sur le site public.");
   // Résout les paris seulement si le match est terminé (ou en mode test).
   const winnings =
     h === "" || a === "" || !canSettleMatchBets(m)
@@ -533,12 +534,24 @@ function setTestScorers(m, names) {
   if (win > 0) showToast("success", "Paris buteur gagnés", `+${win} 💰 ajoutés au solde.`);
 }
 
+function isMatchClockEnded(m) {
+  return Date.now() >= getDateObj(m).getTime() + MATCH_MS;
+}
+
 function finalizeMatch(m) {
   if (!hasScore(m)) {
     showToast("error", "Score requis", "Enregistre d'abord le score avec OK, puis clique « Fin du match ».");
     return;
   }
   if (isMatchFinalized(m)) return;
+  if (!isTestFlagged(m) && !isMatchClockEnded(m)) {
+    showToast(
+      "error",
+      "Trop tôt",
+      "Le temps réglementaire n'est pas écoulé. OK = score en direct · 🏁 Fin du match = uniquement à la fin."
+    );
+    return;
+  }
   setScoreRecord(m, { ...getScoreRecord(m), final: true });
   recalcStandingsFromScores();
   if (!isDevSoonMode()) persistData();
@@ -561,6 +574,7 @@ function clearMatchScore(m) {
   if (!isDevSoonMode()) persistData();
   render();
   renderGroups();
+  showToast("info", "Score effacé", "Le classement est mis à jour. Les paris déjà résolus ne sont pas annulés.");
 }
 
 function scoreBlockHtml(m) {
@@ -571,6 +585,7 @@ function scoreBlockHtml(m) {
     const hv = s ? s.h : "";
     const av = s ? s.a : "";
     const finalized = isMatchFinalized(m);
+    const canFinalize = s && !finalized && (isTestFlagged(m) || isMatchClockEnded(m));
     return `
       <div class="score-row score-admin">
         <label class="score-label">Score${finalized ? " · validé ✓" : ""}</label>
@@ -578,10 +593,11 @@ function scoreBlockHtml(m) {
         <span class="score-sep">–</span>
         <input type="number" min="0" max="15" class="score-in" data-side="a" value="${av}" placeholder="0" aria-label="Buts ${m.a}"${finalized ? " readonly" : ""}>
         ${finalized ? "" : '<button type="button" class="score-save">OK</button>'}
-        ${s && !finalized ? '<button type="button" class="score-finalize">🏁 Fin du match</button>' : ""}
+        ${canFinalize ? '<button type="button" class="score-finalize">🏁 Fin du match</button>' : ""}
         ${s ? '<button type="button" class="score-clear" title="Effacer le score">✕</button>' : ""}
       </div>
-      ${!finalized && s ? '<p class="score-admin-hint">OK = enregistrer le score provisoire · 🏁 Fin du match = valider définitivement et résoudre les paris.</p>' : ""}
+      ${!finalized && s && !canFinalize ? '<p class="score-admin-hint">OK = score provisoire en direct · le bouton 🏁 Fin du match apparaît à la fin du temps réglementaire.</p>' : ""}
+      ${!finalized && s && canFinalize ? '<p class="score-admin-hint">OK = enregistrer le score provisoire · 🏁 Fin du match = valider définitivement et résoudre les paris.</p>' : ""}
       ${scorersEditorHtml(m)}
     `;
   }
@@ -642,7 +658,6 @@ function bindScoreControls(card, m) {
     card.querySelector(".scorers-save")?.addEventListener("click", () => {
       const names = [...card.querySelectorAll(".scorer-chip.on")].map((c) => c.dataset.scorer);
       setScorers(m, names);
-      showToast("success", "Buteurs enregistrés", names.length ? names.join(", ") : "Aucun buteur retenu.");
     });
   }
 
@@ -655,10 +670,7 @@ function bindScoreControls(card, m) {
 
   card.querySelector(".score-finalize")?.addEventListener("click", () => finalizeMatch(m));
 
-  card.querySelector(".score-clear")?.addEventListener("click", () => {
-    clearMatchScore(m);
-    showToast("info", "Info", "Score effacé.");
-  });
+  card.querySelector(".score-clear")?.addEventListener("click", () => clearMatchScore(m));
 
   if (saveBtn) {
     card.querySelectorAll(".score-in").forEach((input) => {
@@ -779,8 +791,7 @@ function resolveDueBets() {
       if (!m) return;
       const ctx = betContext(m);
       if (!ctx.score) return;
-      // Match réel : on attend qu'il soit terminé. Match en test : résolution immédiate.
-      if (!ctx.isTest && getMatchStatus(m).key !== "done") return;
+      if (!canSettleMatchBets(m)) return;
       r = window.Betting.resolveBetWith(bet.id, ctx.score, ctx.scorers);
     }
     if (r && r.success) {
@@ -1118,7 +1129,8 @@ function getMatchStatus(m) {
   const now = new Date();
   if (now < start) return { key: "upcoming", label: "À venir" };
   if (now <= end) return { key: "live", label: "En cours" };
-  return { key: "done", label: "Terminé" };
+  if (hasScore(m)) return { key: "await", label: "À valider" };
+  return { key: "await", label: "Score manquant" };
 }
 
 function getFavorites() {
@@ -1214,6 +1226,7 @@ function createCard(m, opts = {}) {
   card.className = "card " + (m.tag || "");
   if (hasScore(m)) card.classList.add("has-score");
   if (status?.key === "live") card.classList.add("live");
+  if (status?.key === "await") card.classList.add("await");
   if (status?.key === "done") card.classList.add("done");
 
   const favMark = (t) => (isFavorite(t) ? '<span class="fav-dot" title="Favori">★</span>' : "");
@@ -2058,6 +2071,7 @@ function renderToday() {
   const allToday = getTodayAllMatches();
   const live = allToday.filter((m) => getMatchStatus(m).key === "live");
   const upcoming = allToday.filter((m) => getMatchStatus(m).key === "upcoming");
+  const awaitVal = allToday.filter((m) => getMatchStatus(m).key === "await");
   const done = allToday.filter((m) => getMatchStatus(m).key === "done");
   const todayBets = getTodayPendingBets();
 
@@ -2139,6 +2153,7 @@ function renderToday() {
 
   appendSection("🔴 En direct", live, "section-live");
   appendSection("⏳ À venir", upcoming);
+  if (awaitVal.length) appendSection("⚠️ À valider", awaitVal, "section-await");
   appendSection("✅ Terminés", done, "section-done");
 }
 
@@ -2231,13 +2246,13 @@ function maybeRefreshBetting() {
   if (bettingSignature() !== lastBettingSignature) renderBettingPage();
 }
 
-// Contexte résolvable d'un match (avec attente que le vrai match soit terminé).
+// Contexte résolvable : score + match validé (Fin du match) ou mode test.
 function resolvableCtx(matchId) {
   const m = getAnyMatch(matchId);
   if (!m) return null;
   const ctx = betContext(m);
   if (!ctx.score) return null;
-  if (!ctx.isTest && getMatchStatus(m).key !== "done" && !isMatchFinalized(m)) return null;
+  if (!canSettleMatchBets(m)) return null;
   return ctx;
 }
 
@@ -3262,7 +3277,7 @@ function renderAdminBar() {
   if (editable) {
     const test = window.Players && window.Players.isTestMode();
     bar.innerHTML = `
-      <p class="admin-msg ok">Mode admin — saisis les scores sur les matchs, les points des poules suivent (victoire 3, nul 1).</p>
+      <p class="admin-msg ok">Mode admin — OK = score en direct · 🏁 Fin du match = valider et résoudre les paris (classement inclus).</p>
       <button type="button" class="admin-btn outline" id="btnRecalc">Recalculer les points</button>
       <button type="button" class="admin-btn outline" id="btnLock">Verrouiller</button>
       <button type="button" class="admin-btn outline" id="btnRefresh">Actualiser</button>
@@ -3786,6 +3801,7 @@ async function boot() {
   document.body.classList.toggle("dev-soon-mode", isDevSoonMode());
   const result = await initStandingsSync();
   syncMode = result.mode;
+  recalcStandingsFromScores();
   if (window.Betting) window.Betting.init();
   // Profil cross-appareils : on récupère le solde / paris / favoris en ligne.
   if (window.Players && window.Players.hasJoined() && window.Players.pullProfileData) {

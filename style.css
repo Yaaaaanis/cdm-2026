@@ -722,6 +722,11 @@ h3,
   box-shadow: 0 0 0 1px rgba(255, 77, 109, 0.25);
 }
 
+.card.await {
+  border-color: #e8a317;
+  box-shadow: 0 0 0 1px rgba(232, 163, 23, 0.25);
+}
+
 .card.done {
   opacity: 0.85;
 }
@@ -910,6 +915,10 @@ h3,
 
 .status-live {
   color: var(--live);
+}
+
+.status-await {
+  color: #e8a317;
 }
 
 .status-upcoming {

@@ -213,6 +213,7 @@ async function refreshStandingsFromCloud() {
     oddsOverrides = parsed.oddsOverrides || {};
     bettingMaintenance = !!parsed.bettingMaintenance;
     saveDataLocal();
+    if (typeof recalcStandingsFromScores === "function") recalcStandingsFromScores();
     if (typeof resolveDueBets === "function") resolveDueBets();
     render();
     renderGroups();
