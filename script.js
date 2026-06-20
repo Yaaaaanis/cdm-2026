@@ -487,6 +487,32 @@ function saveBetEditModal() {
   }
 }
 
+function bindAdminWalletSecret(el) {
+  if (!el) return;
+  el.addEventListener("dblclick", (e) => {
+    if (e.altKey && canEditStandings()) openAdminBetPicker();
+  });
+  let pressTimer = null;
+  const clearPress = () => {
+    if (pressTimer) {
+      clearTimeout(pressTimer);
+      pressTimer = null;
+    }
+  };
+  el.addEventListener("touchstart", () => {
+    if (!canEditStandings()) return;
+    clearPress();
+    pressTimer = setTimeout(() => {
+      pressTimer = null;
+      openAdminBetPicker();
+      if (navigator.vibrate) navigator.vibrate(40);
+    }, 700);
+  }, { passive: true });
+  el.addEventListener("touchend", clearPress);
+  el.addEventListener("touchmove", clearPress);
+  el.addEventListener("touchcancel", clearPress);
+}
+
 function initBetEditModal() {
   const modal = document.getElementById("betEditModal");
   if (!modal) return;
@@ -499,11 +525,7 @@ function initBetEditModal() {
       openAdminBetPicker();
     }
   });
-  document.querySelectorAll("#walletBalance, #walletBalancePage").forEach((el) => {
-    el.addEventListener("dblclick", (e) => {
-      if (e.altKey && canEditStandings()) openAdminBetPicker();
-    });
-  });
+  document.querySelectorAll("#walletBalance, #walletBalancePage").forEach(bindAdminWalletSecret);
 }
 
 // Lecture d'une cote forcée par l'admin (utilisée par odds.js).
