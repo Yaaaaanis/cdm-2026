@@ -389,7 +389,10 @@ function betOutcome(bet, score, scorers) {
     case "scorer": {
       const name = String(sel).replace(/^but:/, "");
       if (Array.isArray(scorers) && scorers.length) {
-        return scorers.includes(name) ? "won" : "lost";
+        if (scorers.includes(name)) return "won";
+        const last = name.split(" ").pop().toLowerCase();
+        const hit = scorers.some((s) => s === name || s.split(" ").pop().toLowerCase() === last);
+        return hit ? "won" : "lost";
       }
       if (total === 0) return "lost"; // aucun but => aucun buteur
       return null; // en attente de la saisie des buteurs
@@ -424,6 +427,76 @@ function resolveBetWith(betId, score, scorers) {
 // Ancienne API (1N2 uniquement) — conservée par sécurité.
 function resolveBet(betId, matchResult) {
   return resolveBetWith(betId, matchResult === "home" ? { h: 1, a: 0 } : matchResult === "away" ? { h: 0, a: 1 } : { h: 1, a: 1 }, null);
+}
+
+// Admin : remettre un pari résolu en attente (pour le modifier puis re-résoudre proprement).
+function resetBetToPending(betId) {
+  const bet = bets.find((b) => b.id === betId);
+  if (!bet) return { success: false, error: "Pari introuvable" };
+  if (bet.status === "pending") return { success: true };
+
+  if (bet.status === "lost") {
+    wallet.totalLosses = Math.max(0, (wallet.totalLosses || 0) - bet.amount);
+  } else if (bet.status === "won") {
+    wallet.balance = Math.max(0, wallet.balance - bet.potentialWin);
+    wallet.totalWinnings = Math.max(0, (wallet.totalWinnings || 0) - bet.potentialWin);
+    saveWallet();
+  }
+
+  bet.status = "pending";
+  delete bet.adminOverride;
+  saveWallet();
+  saveBets();
+  return { success: true };
+}
+
+// Admin : modifier les jambes d'un combiné (libellés, marchés, cotes).
+function updateComboBet(betId, legs) {
+  const bet = bets.find((b) => b.id === betId);
+  if (!bet || bet.type !== "combo") return { success: false, error: "Combiné introuvable" };
+  if (!Array.isArray(legs) || !legs.length) return { success: false, error: "Au moins une sélection requise" };
+
+  bet.legs = legs.map((l) => {
+    const odds = Math.round(parseFloat(l.odds) * 100) / 100;
+    if (!Number.isFinite(odds) || odds <= 1) return null;
+    return {
+      matchId: String(l.matchId),
+      market: String(l.market || "1x2"),
+      selection: String(l.selection || ""),
+      label: String(l.label || l.selection || ""),
+      odds,
+      matchLabel: String(l.matchLabel || "")
+    };
+  });
+  if (bet.legs.some((l) => !l)) return { success: false, error: "Cote invalide sur une sélection" };
+
+  bet.odds = Math.round(bet.legs.reduce((p, l) => p * l.odds, 1) * 100) / 100;
+  bet.potentialWin = Math.floor(bet.amount * bet.odds);
+  delete bet.adminOverride;
+  saveBets();
+  return { success: true, bet };
+}
+
+// Admin : modifier un pari simple.
+function updateSingleBet(betId, fields) {
+  const bet = bets.find((b) => b.id === betId);
+  if (!bet || bet.type === "combo") return { success: false, error: "Pari introuvable" };
+
+  if (fields.label != null) bet.label = String(fields.label);
+  if (fields.market != null) bet.market = String(fields.market);
+  if (fields.selection != null) {
+    bet.selection = String(fields.selection);
+    if (fields.market === "1x2" || bet.market === "1x2") bet.betType = bet.selection;
+  }
+  if (fields.odds != null) {
+    const odds = Math.round(parseFloat(fields.odds) * 100) / 100;
+    if (!Number.isFinite(odds) || odds <= 1) return { success: false, error: "Cote invalide" };
+    bet.odds = odds;
+  }
+  bet.potentialWin = Math.floor(bet.amount * bet.odds);
+  delete bet.adminOverride;
+  saveBets();
+  return { success: true, bet };
 }
 
 // Annuler un pari en attente : rembourse la mise et supprime le pari.
@@ -515,6 +588,9 @@ window.Betting = {
   getPendingBets,
   getCompletedBets,
   cancelBet,
+  resetBetToPending,
+  updateComboBet,
+  updateSingleBet,
   getTotalPotentialWin,
   resolveBet,
   resolveBetWith,

@@ -49,7 +49,7 @@ const STAR_SCORERS = {
   // France
   "Kylian Mbappé": 3.6, "Ousmane Dembélé": 2.0, "Marcus Thuram": 1.8, "Michael Olise": 1.6, "Bradley Barcola": 1.5, "Jean-Philippe Mateta": 1.5,
   // Maroc
-  "Ayoub El Kaabi": 2.2, "Brahim Diaz": 1.9, "Soufiane Rahimi": 1.6, "Abdessamad Ezzalzouli": 1.6,
+  "Ayoub El Kaabi": 2.2, "Brahim Diaz": 1.9, "Ismaël Saibari": 2.0, "Soufiane Rahimi": 1.6, "Abdessamad Ezzalzouli": 1.6,
   // Portugal
   "Cristiano Ronaldo": 3.0, "Rafael Leão": 2.2, "Gonçalo Ramos": 2.0, "Bruno Fernandes": 2.2, "João Félix": 1.8, "Pedro Neto": 1.6,
   // Brésil

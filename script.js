@@ -315,14 +315,143 @@ function comboLegStatus(leg) {
 }
 
 // Rend une ligne de sélection d'un combiné avec sa pastille d'état.
-function comboLegHtml(leg) {
-  const st = comboLegStatus(leg);
+function comboLegHtml(leg, forceWon = false) {
+  const st = forceWon ? "won" : comboLegStatus(leg);
   const icon = st === "won" ? "✅" : st === "lost" ? "❌" : "⏳";
-  const tip = st === "won" ? "Passé" : st === "lost" ? "Raté" : "En attente";
+  const tip = forceWon ? "Validé" : st === "won" ? "Passé" : st === "lost" ? "Raté" : "En attente";
   return `<div class="combo-bet-leg leg-${st}" title="${tip}">
     <span class="leg-state">${icon}</span>
     <span class="leg-text"><span class="leg-match">${escapeHtml(leg.matchLabel)}</span><span class="leg-pick">${escapeHtml(leg.label)} · ${leg.odds.toFixed(2)}</span></span>
   </div>`;
+}
+
+function adminEditBetHtml(betId) {
+  if (!canEditStandings()) return "";
+  return `<button type="button" class="bet-admin-edit" data-bet-id="${escapeHtml(betId)}" title="Admin — ton profil uniquement">✏️ Modifier le pari</button>`;
+}
+
+function bindAdminEditBet(root) {
+  if (!root || !canEditStandings()) return;
+  root.querySelectorAll(".bet-admin-edit").forEach((btn) => {
+    btn.addEventListener("click", () => openBetEditModal(btn.dataset.betId));
+  });
+}
+
+function betLegEditRow(leg, i) {
+  const markets = ["1x2", "dc", "ou", "btts", "exact", "scorer"];
+  const opts = markets.map((m) => `<option value="${m}"${leg.market === m ? " selected" : ""}>${m}</option>`).join("");
+  return `
+    <fieldset class="bet-leg-edit" data-leg="${i}">
+      <legend>${escapeHtml(leg.matchLabel || "Sélection " + (i + 1))}</legend>
+      <input type="hidden" class="leg-match-id" value="${escapeHtml(leg.matchId)}">
+      <input type="hidden" class="leg-match-label" value="${escapeHtml(leg.matchLabel || "")}">
+      <label>Libellé affiché<input type="text" class="leg-label" value="${escapeHtml(leg.label || "")}"></label>
+      <label>Marché<select class="leg-market">${opts}</select></label>
+      <label>Sélection <span class="leg-sel-hint">(ex. away, X2, under_1.5, but:Ismaël Saibari)</span>
+        <input type="text" class="leg-selection" value="${escapeHtml(leg.selection || "")}">
+      </label>
+      <label>Cote<input type="number" class="leg-odds" min="1.01" step="0.01" value="${Number(leg.odds || 2).toFixed(2)}"></label>
+    </fieldset>`;
+}
+
+function betSingleEditForm(bet, match) {
+  const markets = ["1x2", "dc", "ou", "btts", "exact", "scorer"];
+  const opts = markets.map((m) => `<option value="${m}"${bet.market === m ? " selected" : ""}>${m}</option>`).join("");
+  return `
+    <fieldset class="bet-leg-edit">
+      <legend>${match ? `${teamLabel(match.h)} vs ${teamLabel(match.a)}` : "Pari simple"}</legend>
+      <label>Libellé affiché<input type="text" id="singleBetLabel" value="${escapeHtml(bet.label || "")}"></label>
+      <label>Marché<select id="singleBetMarket">${opts}</select></label>
+      <label>Sélection<input type="text" id="singleBetSelection" value="${escapeHtml(bet.selection || "")}"></label>
+      <label>Cote<input type="number" id="singleBetOdds" min="1.01" step="0.01" value="${Number(bet.odds || 2).toFixed(2)}"></label>
+    </fieldset>`;
+}
+
+function openBetEditModal(betId) {
+  const modal = document.getElementById("betEditModal");
+  const body = document.getElementById("betEditBody");
+  if (!modal || !body || !window.Betting) return;
+
+  const bet = window.Betting.getAllBets().find((b) => b.id === betId);
+  if (!bet) return;
+
+  modal.dataset.betId = betId;
+  modal.dataset.betType = bet.type === "combo" ? "combo" : "single";
+
+  if (bet.type === "combo") {
+    body.innerHTML = bet.legs.map((leg, i) => betLegEditRow(leg, i)).join("");
+  } else {
+    const match = getAnyMatch(bet.matchId);
+    body.innerHTML = betSingleEditForm(bet, match);
+  }
+
+  modal.classList.remove("hidden");
+}
+
+function closeBetEditModal() {
+  document.getElementById("betEditModal")?.classList.add("hidden");
+}
+
+function saveBetEditModal() {
+  const modal = document.getElementById("betEditModal");
+  if (!modal || !window.Betting) return;
+
+  const betId = modal.dataset.betId;
+  const betType = modal.dataset.betType;
+  const bet = window.Betting.getAllBets().find((b) => b.id === betId);
+  if (!bet) return;
+
+  if (bet.status !== "pending") window.Betting.resetBetToPending(betId);
+
+  let r;
+  if (betType === "combo") {
+    const legs = [...modal.querySelectorAll(".bet-leg-edit")].map((row) => ({
+      matchId: row.querySelector(".leg-match-id")?.value || "",
+      matchLabel: row.querySelector(".leg-match-label")?.value || "",
+      label: row.querySelector(".leg-label")?.value || "",
+      market: row.querySelector(".leg-market")?.value || "1x2",
+      selection: row.querySelector(".leg-selection")?.value || "",
+      odds: row.querySelector(".leg-odds")?.value || "2"
+    }));
+    r = window.Betting.updateComboBet(betId, legs);
+  } else {
+    r = window.Betting.updateSingleBet(betId, {
+      label: document.getElementById("singleBetLabel")?.value,
+      market: document.getElementById("singleBetMarket")?.value,
+      selection: document.getElementById("singleBetSelection")?.value,
+      odds: document.getElementById("singleBetOdds")?.value
+    });
+  }
+
+  if (!r.success) {
+    showToast("error", "Erreur", r.error || "Modification impossible.");
+    return;
+  }
+
+  resolveDueBets();
+  closeBetEditModal();
+  window.Betting.renderWalletBalance();
+  syncAfterBetChange();
+  renderBettingPage();
+
+  const updated = window.Betting.getAllBets().find((b) => b.id === betId);
+  if (updated?.status === "won") {
+    showToast("success", "Pari mis à jour", "Combiné gagné — résolution normale ✅");
+  } else if (updated?.status === "lost") {
+    showToast("info", "Pari mis à jour", "Certaines sélections ne passent pas encore avec le score actuel.");
+  } else {
+    showToast("success", "Pari mis à jour", "Valide le match avec 🏁 Fin du match pour résoudre automatiquement.");
+  }
+}
+
+function initBetEditModal() {
+  const modal = document.getElementById("betEditModal");
+  if (!modal) return;
+  modal.querySelectorAll("[data-bet-edit-dismiss]").forEach((b) => b.addEventListener("click", closeBetEditModal));
+  document.getElementById("betEditSave")?.addEventListener("click", saveBetEditModal);
+  document.addEventListener("keydown", (e) => {
+    if (e.key === "Escape" && !modal.classList.contains("hidden")) closeBetEditModal();
+  });
 }
 
 // Lecture d'une cote forcée par l'admin (utilisée par odds.js).
@@ -641,6 +770,10 @@ function scorersEditorHtml(m, test = false) {
         <p class="section-hint">Coche les joueurs qui ont marqué puis enregistre — nécessaire pour résoudre les paris « buteur ».</p>
         ${teamBlock(m.h)}
         ${teamBlock(m.a)}
+        <div class="scorer-custom-add">
+          <input type="text" class="scorer-custom-in" placeholder="Autre buteur (ex. Ismaël Saibari)" aria-label="Autre buteur">
+          <span class="section-hint">Pas dans la liste ? Saisis le nom ici — il sera compté à l'enregistrement.</span>
+        </div>
         <button type="button" class="admin-btn ${saveClass}">Enregistrer les buteurs</button>
       </div>
     </div>
@@ -657,6 +790,8 @@ function bindScoreControls(card, m) {
     });
     card.querySelector(".scorers-save")?.addEventListener("click", () => {
       const names = [...card.querySelectorAll(".scorer-chip.on")].map((c) => c.dataset.scorer);
+      const custom = card.querySelector(".scorer-custom-in")?.value?.trim();
+      if (custom) names.push(custom);
       setScorers(m, names);
     });
   }
@@ -2686,6 +2821,7 @@ function renderBettingPage() {
             <div class="bet-details">
               <span class="bet-potential">Gain : ${bet.potentialWin} 💰</span>
             </div>
+            ${adminEditBetHtml(bet.id)}
           `;
         } else {
           const pick = bet.label || (bet.betType === 'home' ? match.h : bet.betType === 'away' ? match.a : 'Nul');
@@ -2703,6 +2839,7 @@ function renderBettingPage() {
               <span class="bet-amount">Mise : ${bet.amount} 💰</span>
               <span class="bet-potential">Gain : ${bet.potentialWin} 💰</span>
             </div>
+            ${adminEditBetHtml(bet.id)}
           `;
         }
         card.querySelector(".bet-cancel")?.addEventListener("click", () => {
@@ -2744,6 +2881,7 @@ function renderBettingPage() {
         });
         pendingBetsEl.appendChild(card);
       });
+      bindAdminEditBet(pendingBetsEl);
     }
   }
 
@@ -2762,6 +2900,8 @@ function renderBettingPage() {
         card.className = `bet-card ${bet.status}`;
         const statusLabel = bet.status === 'won' ? 'Gagné' : 'Perdu';
         const gainCell = `<span class="${bet.status === 'won' ? 'bet-potential' : ''}">${bet.status === 'won' ? 'Gain : ' + bet.potentialWin + ' 💰' : 'Perdu'}</span>`;
+        const editBtn = adminEditBetHtml(bet.id);
+        const legForce = !!bet.adminOverride;
 
         if (isCombo) {
           card.classList.add("combo-bet");
@@ -2769,13 +2909,14 @@ function renderBettingPage() {
             <div class="bet-header"><span class="bet-status ${bet.status}">${statusLabel}</span></div>
             <div class="bet-match">🎰 Combiné · ${bet.legs.length} sélections</div>
             <div class="combo-bet-legs">
-              ${bet.legs.map(comboLegHtml).join("")}
+              ${bet.legs.map((l) => comboLegHtml(l, legForce)).join("")}
             </div>
             <div class="bet-details">
               <span class="bet-amount">Mise : ${bet.amount} 💰</span>
               <span class="bet-odds">Cote : ${bet.odds.toFixed(2)}</span>
             </div>
             <div class="bet-details">${gainCell}</div>
+            ${editBtn}
           `;
         } else {
           const pick = bet.label || (bet.betType === 'home' ? match.h : bet.betType === 'away' ? match.a : 'Nul');
@@ -2792,10 +2933,12 @@ function renderBettingPage() {
               <span class="bet-amount">Mise : ${bet.amount} 💰</span>
               ${gainCell}
             </div>
+            ${editBtn}
           `;
         }
         completedBetsEl.appendChild(card);
       });
+      bindAdminEditBet(completedBetsEl);
     }
   }
   lastBettingSignature = bettingSignature();
@@ -3796,6 +3939,7 @@ async function boot() {
   initJoinModal();
   initLoginModal();
   initMatchModal();
+  initBetEditModal();
   validateBracket();
   document.body.classList.toggle("test-mode", !!(window.Players && window.Players.isTestMode()));
   document.body.classList.toggle("dev-soon-mode", isDevSoonMode());

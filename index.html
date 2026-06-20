@@ -303,6 +303,20 @@
   </div>
 </div>
 
+<div id="betEditModal" class="welcome-modal hidden" role="dialog" aria-modal="true" aria-labelledby="betEditTitle">
+  <div class="welcome-overlay" data-bet-edit-dismiss></div>
+  <div class="welcome-card bet-edit-card">
+    <button type="button" class="welcome-close" data-bet-edit-dismiss aria-label="Fermer">✕</button>
+    <h2 id="betEditTitle">✏️ Modifier mon pari</h2>
+    <p class="section-hint bet-edit-hint">Ajuste les sélections pour qu'elles correspondent au résultat réel. Ensuite le pari se résout normalement (comme si tu avais parié dessus).</p>
+    <div id="betEditBody"></div>
+    <div class="bet-edit-actions">
+      <button type="button" class="admin-btn outline" data-bet-edit-dismiss>Annuler</button>
+      <button type="button" class="admin-btn" id="betEditSave">Enregistrer et résoudre</button>
+    </div>
+  </div>
+</div>
+
 <script src="config.js"></script>
 <script src="flags.js"></script>
 <script src="phases.js"></script>
