@@ -489,28 +489,59 @@ function saveBetEditModal() {
 
 function bindAdminWalletSecret(el) {
   if (!el) return;
+  el.classList.add("wallet-admin-secret");
+
   el.addEventListener("dblclick", (e) => {
-    if (e.altKey && canEditStandings()) openAdminBetPicker();
+    if (e.altKey && canEditStandings()) {
+      e.preventDefault();
+      openAdminBetPicker();
+    }
   });
+
+  // Appui long mobile (menu contextuel)
+  el.addEventListener("contextmenu", (e) => {
+    if (!canEditStandings()) return;
+    e.preventDefault();
+    openAdminBetPicker();
+  });
+
   let pressTimer = null;
-  const clearPress = () => {
+  const stopPress = () => {
     if (pressTimer) {
       clearTimeout(pressTimer);
       pressTimer = null;
     }
   };
-  el.addEventListener("touchstart", () => {
-    if (!canEditStandings()) return;
-    clearPress();
+
+  el.addEventListener("pointerdown", (e) => {
+    if (!canEditStandings() || e.pointerType === "mouse") return;
+    stopPress();
     pressTimer = setTimeout(() => {
       pressTimer = null;
       openAdminBetPicker();
       if (navigator.vibrate) navigator.vibrate(40);
-    }, 700);
-  }, { passive: true });
-  el.addEventListener("touchend", clearPress);
-  el.addEventListener("touchmove", clearPress);
-  el.addEventListener("touchcancel", clearPress);
+    }, 480);
+  });
+  el.addEventListener("pointerup", stopPress);
+  el.addEventListener("pointercancel", stopPress);
+  el.addEventListener("pointerleave", stopPress);
+
+  // Triple tap (le plus fiable sur iPhone / Android)
+  let lastTap = 0;
+  let tapCount = 0;
+  el.addEventListener("touchend", (e) => {
+    if (!canEditStandings()) return;
+    const now = Date.now();
+    tapCount = now - lastTap < 450 ? tapCount + 1 : 1;
+    lastTap = now;
+    if (tapCount >= 3) {
+      tapCount = 0;
+      stopPress();
+      e.preventDefault();
+      openAdminBetPicker();
+      if (navigator.vibrate) navigator.vibrate(40);
+    }
+  });
 }
 
 function initBetEditModal() {
