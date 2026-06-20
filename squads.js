@@ -71,10 +71,10 @@ const SQUADS = {
         { name: "Neil El Aynaoui", club: "AS Rome" },
         { name: "Sofyan Amrabat", club: "Real Betis" },
         { name: "Azzedine Ounahi", club: "Girona FC" },
-        { name: "Bilal El Khannouss", club: "VfB Stuttgart" },
-        { name: "Ismaël Saibari", club: "PSV Eindhoven" }
+        { name: "Bilal El Khannouss", club: "VfB Stuttgart" }
       ],
       "Attaquants": [
+        { name: "Ismaël Saibari", club: "PSV Eindhoven" },
         { name: "Abdessamad Ezzalzouli", club: "Real Betis" },
         { name: "Chemsdine Talbi", club: "Sunderland" },
         { name: "Soufiane Rahimi", club: "Al Ain" },

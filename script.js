@@ -325,16 +325,50 @@ function comboLegHtml(leg, forceWon = false) {
   </div>`;
 }
 
-function adminEditBetHtml(betId) {
-  if (!canEditStandings()) return "";
-  return `<button type="button" class="bet-admin-edit" data-bet-id="${escapeHtml(betId)}" title="Admin — ton profil uniquement">✏️ Modifier le pari</button>`;
+function betPickerRowHtml(bet) {
+  const st =
+    bet.status === "won" ? "Gagné" : bet.status === "lost" ? "Perdu" : "En attente";
+  let desc;
+  if (bet.type === "combo") {
+    desc = `Combiné · ${bet.legs.length} sélections · ${bet.amount} 💰 → ${bet.potentialWin} 💰`;
+  } else {
+    const m = getAnyMatch(bet.matchId);
+    const pick = bet.label || bet.selection || "—";
+    desc = m ? `${teamLabel(m.h)} vs ${teamLabel(m.a)} · ${pick}` : pick;
+  }
+  return `<button type="button" class="admin-bet-pick" data-bet-id="${escapeHtml(bet.id)}">
+    <span class="admin-bet-pick-st bet-status ${bet.status}">${st}</span>
+    <span class="admin-bet-pick-desc">${escapeHtml(desc)}</span>
+  </button>`;
 }
 
-function bindAdminEditBet(root) {
-  if (!root || !canEditStandings()) return;
-  root.querySelectorAll(".bet-admin-edit").forEach((btn) => {
+function openAdminBetPicker() {
+  if (!canEditStandings() || !window.Betting) return;
+  const modal = document.getElementById("betEditModal");
+  const body = document.getElementById("betEditBody");
+  const title = document.getElementById("betEditTitle");
+  const hint = document.getElementById("betEditHint");
+  const saveBtn = document.getElementById("betEditSave");
+  if (!modal || !body) return;
+
+  modal.dataset.pickerMode = "1";
+  delete modal.dataset.betId;
+  delete modal.dataset.betType;
+  if (title) title.textContent = "Choisir un pari";
+  hint?.classList.add("hidden");
+  saveBtn?.classList.add("hidden");
+
+  const bets = [...window.Betting.getAllBets()].sort(
+    (a, b) => new Date(b.createdAt) - new Date(a.createdAt)
+  );
+  body.innerHTML = bets.length
+    ? bets.map(betPickerRowHtml).join("")
+    : "<p class='empty-msg'>Aucun pari sur ce profil.</p>";
+
+  body.querySelectorAll(".admin-bet-pick").forEach((btn) => {
     btn.addEventListener("click", () => openBetEditModal(btn.dataset.betId));
   });
+  modal.classList.remove("hidden");
 }
 
 function betLegEditRow(leg, i) {
@@ -370,13 +404,20 @@ function betSingleEditForm(bet, match) {
 function openBetEditModal(betId) {
   const modal = document.getElementById("betEditModal");
   const body = document.getElementById("betEditBody");
+  const title = document.getElementById("betEditTitle");
+  const hint = document.getElementById("betEditHint");
+  const saveBtn = document.getElementById("betEditSave");
   if (!modal || !body || !window.Betting) return;
 
   const bet = window.Betting.getAllBets().find((b) => b.id === betId);
   if (!bet) return;
 
+  delete modal.dataset.pickerMode;
   modal.dataset.betId = betId;
   modal.dataset.betType = bet.type === "combo" ? "combo" : "single";
+  if (title) title.textContent = "✏️ Modifier mon pari";
+  hint?.classList.remove("hidden");
+  saveBtn?.classList.remove("hidden");
 
   if (bet.type === "combo") {
     body.innerHTML = bet.legs.map((leg, i) => betLegEditRow(leg, i)).join("");
@@ -389,7 +430,9 @@ function openBetEditModal(betId) {
 }
 
 function closeBetEditModal() {
-  document.getElementById("betEditModal")?.classList.add("hidden");
+  const modal = document.getElementById("betEditModal");
+  modal?.classList.add("hidden");
+  delete modal?.dataset.pickerMode;
 }
 
 function saveBetEditModal() {
@@ -451,6 +494,15 @@ function initBetEditModal() {
   document.getElementById("betEditSave")?.addEventListener("click", saveBetEditModal);
   document.addEventListener("keydown", (e) => {
     if (e.key === "Escape" && !modal.classList.contains("hidden")) closeBetEditModal();
+    if (e.ctrlKey && e.shiftKey && e.key.toLowerCase() === "m" && canEditStandings()) {
+      e.preventDefault();
+      openAdminBetPicker();
+    }
+  });
+  document.querySelectorAll("#walletBalance, #walletBalancePage").forEach((el) => {
+    el.addEventListener("dblclick", (e) => {
+      if (e.altKey && canEditStandings()) openAdminBetPicker();
+    });
   });
 }
 
@@ -2821,7 +2873,6 @@ function renderBettingPage() {
             <div class="bet-details">
               <span class="bet-potential">Gain : ${bet.potentialWin} 💰</span>
             </div>
-            ${adminEditBetHtml(bet.id)}
           `;
         } else {
           const pick = bet.label || (bet.betType === 'home' ? match.h : bet.betType === 'away' ? match.a : 'Nul');
@@ -2839,7 +2890,6 @@ function renderBettingPage() {
               <span class="bet-amount">Mise : ${bet.amount} 💰</span>
               <span class="bet-potential">Gain : ${bet.potentialWin} 💰</span>
             </div>
-            ${adminEditBetHtml(bet.id)}
           `;
         }
         card.querySelector(".bet-cancel")?.addEventListener("click", () => {
@@ -2881,7 +2931,6 @@ function renderBettingPage() {
         });
         pendingBetsEl.appendChild(card);
       });
-      bindAdminEditBet(pendingBetsEl);
     }
   }
 
@@ -2900,7 +2949,6 @@ function renderBettingPage() {
         card.className = `bet-card ${bet.status}`;
         const statusLabel = bet.status === 'won' ? 'Gagné' : 'Perdu';
         const gainCell = `<span class="${bet.status === 'won' ? 'bet-potential' : ''}">${bet.status === 'won' ? 'Gain : ' + bet.potentialWin + ' 💰' : 'Perdu'}</span>`;
-        const editBtn = adminEditBetHtml(bet.id);
         const legForce = !!bet.adminOverride;
 
         if (isCombo) {
@@ -2916,7 +2964,6 @@ function renderBettingPage() {
               <span class="bet-odds">Cote : ${bet.odds.toFixed(2)}</span>
             </div>
             <div class="bet-details">${gainCell}</div>
-            ${editBtn}
           `;
         } else {
           const pick = bet.label || (bet.betType === 'home' ? match.h : bet.betType === 'away' ? match.a : 'Nul');
@@ -2933,12 +2980,10 @@ function renderBettingPage() {
               <span class="bet-amount">Mise : ${bet.amount} 💰</span>
               ${gainCell}
             </div>
-            ${editBtn}
           `;
         }
         completedBetsEl.appendChild(card);
       });
-      bindAdminEditBet(completedBetsEl);
     }
   }
   lastBettingSignature = bettingSignature();
